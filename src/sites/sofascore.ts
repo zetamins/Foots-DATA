@@ -87,22 +87,27 @@ interface SofascoreTeam {
   slug: string;
 }
 
+// On Vercel specifically, this endpoint reliably comes back
+// `{"error":{"code":403,"reason":"challenge"}}` -- confirmed live via a
+// temporary diagnostic during development. That's Sofascore/Cloudflare
+// actively identifying Vercel's datacenter IP range and hard-blocking it,
+// a different and stronger signal than the JS-challenge-on-first-load a
+// real headless browser already satisfies for normal (residential)
+// traffic. No amount of retrying, waiting, or browser-fingerprint tuning
+// gets past an explicit IP-based block like this -- the only way through
+// would be routing requests via a different IP (e.g. a residential
+// proxy), which is a real step up from "run a real browser to satisfy a
+// JS check" into "actively evade an explicit block," and this project has
+// held the line against that throughout. So: known, permanent limitation
+// when this scraper runs on Vercel specifically, not a bug -- the CLI
+// (run from a normal residential/non-datacenter connection) is unaffected.
 async function findTeam(page: Page, teamName: string): Promise<SofascoreTeam | null> {
   const data = await fetchJson(
     page,
     `https://www.sofascore.com/api/v1/search/all?q=${encodeURIComponent(teamName)}&page=0`,
   );
   const hit = data.results?.find((r: any) => r.type === "team");
-  if (!hit) {
-    // TEMP DIAGNOSTIC (see next commit for removal): capture what the
-    // search endpoint actually returned so a production-only failure can
-    // be told apart from a genuine "no results" -- couldn't be diagnosed
-    // from the terse "no team found" error alone.
-    if (process.env.VERCEL) {
-      throw new Error(`DIAG no-hit for "${teamName}": ${JSON.stringify(data).slice(0, 500)}`);
-    }
-    return null;
-  }
+  if (!hit) return null;
   return { id: hit.entity.id, name: hit.entity.name, slug: hit.entity.slug };
 }
 
