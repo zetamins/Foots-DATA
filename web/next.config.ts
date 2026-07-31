@@ -24,7 +24,14 @@ const nextConfig: NextConfig = {
     // ("Cannot find module '.../playwright-core/browsers.json'" on every
     // production request), the same class of "tracer can't see a dynamic
     // require" gap as the data/ files above.
-    "/api/search": ["../data/**/*", "../node_modules/playwright-core/**/*"],
+    //
+    // @sparticuz/chromium's own **/*: its actual compressed Chromium
+    // binary lives under its own bin/ directory, read relative to the
+    // package's own location at runtime, not via a traceable import --
+    // confirmed live with a second, near-identical failure ("The input
+    // directory '.../@sparticuz/chromium/bin' does not exist") right after
+    // fixing the playwright-core one above.
+    "/api/search": ["../data/**/*", "../node_modules/playwright-core/**/*", "../node_modules/@sparticuz/chromium/**/*"],
   },
 };
 
