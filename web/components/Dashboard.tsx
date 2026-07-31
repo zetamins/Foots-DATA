@@ -1,9 +1,13 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
-import ReactMarkdown from "react-markdown";
+import { Download, FileJson, Search } from "lucide-react";
 import { useSearchStream } from "../lib/useSearchStream";
+import { buildSections } from "../lib/dashboardSections";
+import { MatchHeader } from "./dashboard/MatchHeader";
+import { FormChart } from "./dashboard/FormChart";
+import { SectionCard } from "./dashboard/SectionCard";
+import { Card } from "./ui/Card";
 
 function download(filename: string, content: string, mime: string) {
   const blob = new Blob([content], { type: mime });
@@ -22,7 +26,6 @@ function slugify(s: string): string {
 export default function Dashboard() {
   const [team, setTeam] = useState("");
   const { status, progress, report, markdown, error, run } = useSearchStream();
-  const router = useRouter();
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -31,21 +34,16 @@ export default function Dashboard() {
     run(trimmed);
   };
 
-  const openSimulator = () => {
-    if (!report) return;
-    sessionStorage.setItem("football-report", JSON.stringify(report));
-    router.push("/simulate");
-  };
-
   const base = report ? slugify(report.team) : "report";
+  const sections = report ? buildSections(report) : [];
 
   return (
-    <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-6 px-4 py-10">
+    <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-6 px-4 py-10">
       <header className="flex flex-col gap-1">
         <h1 className="text-2xl font-semibold tracking-tight">Football Report</h1>
         <p className="text-sm text-neutral-500">
           Search a team. Sofascore, Fotmob, SoccerDesk, Goal.com, and 365Scores are scraped live and merged into one
-          report.
+          analysis dashboard.
         </p>
       </header>
 
@@ -59,8 +57,9 @@ export default function Dashboard() {
         <button
           type="submit"
           disabled={status === "loading" || !team.trim()}
-          className="rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-40 dark:bg-white dark:text-neutral-900"
+          className="flex items-center gap-1.5 rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-40 dark:bg-white dark:text-neutral-900"
         >
+          <Search className="h-4 w-4" />
           {status === "loading" ? "Searching…" : "Search"}
         </button>
       </form>
@@ -84,33 +83,43 @@ export default function Dashboard() {
         </div>
       )}
 
-      {status === "done" && report && (
+      {status === "done" && report && report.match && (
         <div className="flex flex-col gap-4">
-          <article className="prose prose-neutral max-w-none dark:prose-invert prose-headings:mt-6 prose-headings:mb-2 prose-h1:text-xl prose-h2:text-lg">
-            <ReactMarkdown>{markdown}</ReactMarkdown>
-          </article>
+          <MatchHeader report={report} />
+
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <FormChart report={report} />
+            {sections.map((section, i) => (
+              <SectionCard key={i} section={section} />
+            ))}
+          </div>
+
+          <Card className="flex items-center justify-between text-xs text-neutral-500">
+            <span>
+              Sources: {report.sources.map((s) => `${s.source} (${s.fixturesScraped})`).join(", ")}
+            </span>
+          </Card>
 
           <div className="sticky bottom-0 flex flex-wrap gap-2 border-t border-neutral-200 bg-white/90 py-3 backdrop-blur dark:border-neutral-800 dark:bg-neutral-950/90">
             <button
               onClick={() => download(`${base}.json`, JSON.stringify(report, null, 2), "application/json")}
-              className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm dark:border-neutral-700"
+              className="flex items-center gap-1.5 rounded-md border border-neutral-300 px-3 py-1.5 text-sm dark:border-neutral-700"
             >
-              Download JSON
+              <FileJson className="h-4 w-4" /> Download JSON
             </button>
             <button
               onClick={() => download(`${base}.md`, markdown, "text/markdown")}
-              className="rounded-md border border-neutral-300 px-3 py-1.5 text-sm dark:border-neutral-700"
+              className="flex items-center gap-1.5 rounded-md border border-neutral-300 px-3 py-1.5 text-sm dark:border-neutral-700"
             >
-              Download Markdown
-            </button>
-            <button
-              onClick={openSimulator}
-              disabled={!report.match}
-              className="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40"
-            >
-              Simulate this match →
+              <Download className="h-4 w-4" /> Download Markdown
             </button>
           </div>
+        </div>
+      )}
+
+      {status === "done" && report && !report.match && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
+          No upcoming match found for &ldquo;{report.team}&rdquo; from any source.
         </div>
       )}
     </div>

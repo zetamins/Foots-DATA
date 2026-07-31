@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Football Report",
-  description: "Search a team, get a full cross-source match report, simulate the result.",
+  description: "Search a team and get a full cross-source match analysis dashboard.",
 };
 
 export default function RootLayout({
