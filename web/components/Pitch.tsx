@@ -1,71 +1,22 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { parseFormation } from "../lib/simulate";
-
-interface Dot {
-  x: number;
-  y: number;
-}
-
-function formationPositions(rows: number[], side: "home" | "away"): Dot[] {
-  const positions: Dot[] = [{ x: side === "home" ? 4 : 96, y: 32 }];
-  const rowCount = rows.length;
-  for (let i = 0; i < rowCount; i++) {
-    const t = rowCount === 1 ? 0.5 : i / (rowCount - 1);
-    const x = side === "home" ? 18 + t * 28 : 82 - t * 28;
-    const n = rows[i];
-    for (let j = 0; j < n; j++) {
-      const yT = n === 1 ? 0.5 : j / (n - 1);
-      positions.push({ x, y: 6 + yT * 52 });
-    }
-  }
-  return positions;
-}
-
-// Small continuous jitter so the dots read as "alive" rather than a static
-// diagram -- purely cosmetic, not tied to any simulated event.
-function useJitter(base: Dot[], amplitude = 1.4) {
-  const [offsets, setOffsets] = useState(() => base.map(() => ({ dx: 0, dy: 0, phase: Math.random() * Math.PI * 2 })));
-  const startRef = useRef(performance.now());
-
-  useEffect(() => {
-    let raf: number;
-    const tick = () => {
-      const t = (performance.now() - startRef.current) / 1000;
-      setOffsets((prev) =>
-        prev.map((o, i) => ({
-          ...o,
-          dx: Math.sin(t * 0.6 + o.phase + i) * amplitude,
-          dy: Math.cos(t * 0.5 + o.phase + i * 1.3) * amplitude,
-        })),
-      );
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [base.length]);
-
-  return offsets;
-}
+import type { Dot } from "../lib/pitch";
+import { parseFormation } from "../lib/pitch";
 
 export interface PitchProps {
   homeFormation: string | null;
   awayFormation: string | null;
   homeTeam: string;
   awayTeam: string;
-  ballTarget: Dot;
+  homePositions: Dot[];
+  awayPositions: Dot[];
+  ballPos: Dot;
   flashSide: "home" | "away" | null;
 }
 
-export default function Pitch({ homeFormation, awayFormation, homeTeam, awayTeam, ballTarget, flashSide }: PitchProps) {
+export default function Pitch({ homeFormation, awayFormation, homeTeam, awayTeam, homePositions, awayPositions, ballPos, flashSide }: PitchProps) {
   const home = parseFormation(homeFormation);
   const away = parseFormation(awayFormation);
-  const homeDots = formationPositions(home.rows, "home");
-  const awayDots = formationPositions(away.rows, "away");
-  const homeJitter = useJitter(homeDots);
-  const awayJitter = useJitter(awayDots);
 
   return (
     <div className="flex flex-col gap-1">
@@ -89,37 +40,38 @@ export default function Pitch({ homeFormation, awayFormation, homeTeam, awayTeam
           />
         )}
 
-        {homeDots.map((d, i) => (
+        {homePositions.map((d, i) => (
           <circle
             key={`h${i}`}
-            cx={d.x + (homeJitter[i]?.dx ?? 0)}
-            cy={d.y + (homeJitter[i]?.dy ?? 0)}
+            cx={d.x}
+            cy={d.y}
             r={i === 0 ? 1.6 : 1.9}
             fill={i === 0 ? "#fde68a" : "#2563eb"}
             stroke="white"
             strokeWidth="0.2"
+            /* no CSS transition here -- positions are already smoothly interpolated every animation frame by matchEngine.ts's stepEngine, so a CSS transition on top would just re-lag behind whatever it was already easing toward */
           />
         ))}
-        {awayDots.map((d, i) => (
+        {awayPositions.map((d, i) => (
           <circle
             key={`a${i}`}
-            cx={d.x + (awayJitter[i]?.dx ?? 0)}
-            cy={d.y + (awayJitter[i]?.dy ?? 0)}
+            cx={d.x}
+            cy={d.y}
             r={i === 0 ? 1.6 : 1.9}
             fill={i === 0 ? "#fde68a" : "#dc2626"}
             stroke="white"
             strokeWidth="0.2"
+            /* no CSS transition here -- positions are already smoothly interpolated every animation frame by matchEngine.ts's stepEngine, so a CSS transition on top would just re-lag behind whatever it was already easing toward */
           />
         ))}
 
         <circle
-          cx={ballTarget.x}
-          cy={ballTarget.y}
+          cx={ballPos.x}
+          cy={ballPos.y}
           r="1"
           fill="white"
           stroke="#111"
           strokeWidth="0.15"
-          style={{ transition: "cx 1.4s ease-in-out, cy 1.4s ease-in-out" }}
         />
       </svg>
       <div className="flex justify-between px-1 text-xs text-neutral-500">

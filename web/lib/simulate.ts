@@ -128,15 +128,3 @@ export function simulateMatch(report: ReportJson): SimulationResult | null {
 
   return { homeGoals, awayGoals, homeLambda, awayLambda, events, basis };
 }
-
-// Parses "4-2-3-1" into outfield rows [4,2,3,1] (goalkeeper is implicit,
-// added separately by the caller). Falls back to a generic 4-4-2 when the
-// formation wasn't published (common for not-yet-finalized fixtures) --
-// clearly labeled as a fallback in the UI, not presented as real data.
-export function parseFormation(formation: string | null): { rows: number[]; isFallback: boolean } {
-  if (formation) {
-    const rows = formation.split("-").map(Number).filter((n) => Number.isFinite(n) && n > 0);
-    if (rows.length && rows.reduce((a, b) => a + b, 0) === 10) return { rows, isFallback: false };
-  }
-  return { rows: [4, 4, 2], isFallback: true };
-}

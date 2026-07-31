@@ -4,15 +4,12 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Pitch from "./Pitch";
 import { computeExpectedGoals, simulateMatch, type SimulationResult } from "../lib/simulate";
+import { formationPositions, parseFormation, type Dot } from "../lib/pitch";
+import { createEngineState, stepEngine, triggerGoal, resetAfterGoal, type EngineState } from "../lib/matchEngine";
 import type { ReportJson } from "../lib/types";
 
 const MATCH_DURATION_SECONDS = 36; // 90 sim-minutes compressed into 36 real seconds
-
-function randomBallTarget(bias: "home" | "away" | "mid") {
-  const x = bias === "home" ? 15 + Math.random() * 25 : bias === "away" ? 60 + Math.random() * 25 : 35 + Math.random() * 30;
-  const y = 8 + Math.random() * 48;
-  return { x, y };
-}
+const GOAL_FLASH_MS = 1200;
 
 export default function Simulator() {
   const [report, setReport] = useState<ReportJson | null | undefined>(undefined);
@@ -21,12 +18,17 @@ export default function Simulator() {
   const [playing, setPlaying] = useState(false);
   const [scoreboard, setScoreboard] = useState({ home: 0, away: 0 });
   const [flashSide, setFlashSide] = useState<"home" | "away" | null>(null);
-  const [ballTarget, setBallTarget] = useState(() => randomBallTarget("mid"));
+  const [homePositions, setHomePositions] = useState<Dot[]>([]);
+  const [awayPositions, setAwayPositions] = useState<Dot[]>([]);
+  const [ballPos, setBallPos] = useState<Dot>({ x: 50, y: 32 });
   const [log, setLog] = useState<string[]>([]);
   const firedRef = useRef<Set<number>>(new Set());
   const rafRef = useRef<number | undefined>(undefined);
   const startRef = useRef<number>(0);
-  const lastBallMoveRef = useRef(0);
+  const engineRef = useRef<EngineState | null>(null);
+  const homeBaseRef = useRef<Dot[]>([]);
+  const awayBaseRef = useRef<Dot[]>([]);
+  const ballPosRef = useRef<Dot>({ x: 50, y: 32 });
 
   useEffect(() => {
     const raw = sessionStorage.getItem("football-report");
@@ -42,15 +44,26 @@ export default function Simulator() {
     if (!report) return;
     const sim = simulateMatch(report);
     if (!sim) return;
+
+    const home = parseFormation(report.match!.homeFormation);
+    const away = parseFormation(report.match!.awayFormation);
+    homeBaseRef.current = formationPositions(home.rows, "home");
+    awayBaseRef.current = formationPositions(away.rows, "away");
+
     setResult(sim);
     setScoreboard({ home: 0, away: 0 });
     setMinute(0);
     setLog([]);
     firedRef.current = new Set();
     setFlashSide(null);
-    setBallTarget(randomBallTarget("mid"));
+    const now = performance.now();
+    engineRef.current = createEngineState(now);
+    setHomePositions(homeBaseRef.current);
+    setAwayPositions(awayBaseRef.current);
+    ballPosRef.current = { x: 50, y: 32 };
+    setBallPos(ballPosRef.current);
     setPlaying(true);
-    startRef.current = performance.now();
+    startRef.current = now;
   };
 
   useEffect(() => {
@@ -61,28 +74,32 @@ export default function Simulator() {
       const currentMinute = Math.min(90, (elapsedSec / MATCH_DURATION_SECONDS) * 90);
       setMinute(currentMinute);
 
+      const engine = engineRef.current!;
       for (const ev of result.events) {
-        if (currentMinute >= ev.minute && !firedRef.current.has(ev.minute * 1000 + (ev.side === "home" ? 1 : 2))) {
-          firedRef.current.add(ev.minute * 1000 + (ev.side === "home" ? 1 : 2));
+        const key = ev.minute * 1000 + (ev.side === "home" ? 1 : 2);
+        if (currentMinute >= ev.minute && !firedRef.current.has(key)) {
+          firedRef.current.add(key);
+          triggerGoal(engine, now, ev.side, ballPosRef.current);
           setScoreboard((s) => (ev.side === "home" ? { ...s, home: s.home + 1 } : { ...s, away: s.away + 1 }));
           setFlashSide(ev.side);
-          setBallTarget(ev.side === "home" ? { x: 94, y: 32 } : { x: 6, y: 32 });
           setLog((l) => [...l, `${Math.round(ev.minute)}' ⚽ ${ev.side === "home" ? homeTeam : awayTeam}`]);
-          setTimeout(() => setFlashSide(null), 1200);
+          setTimeout(() => {
+            setFlashSide(null);
+            resetAfterGoal(engine, performance.now(), ev.side);
+          }, GOAL_FLASH_MS);
         }
       }
 
-      if (elapsedSec - lastBallMoveRef.current > 1.6 && !result.events.some((e) => Math.abs(e.minute - currentMinute) < 1)) {
-        lastBallMoveRef.current = elapsedSec;
-        const bias = Math.random() < 0.5 ? "home" : Math.random() < 0.9 ? "away" : "mid";
-        setBallTarget(randomBallTarget(bias));
-      }
+      const frame = stepEngine(engine, now, homeBaseRef.current, awayBaseRef.current);
+      setHomePositions(frame.homePositions);
+      setAwayPositions(frame.awayPositions);
+      setBallPos(frame.ballPos);
+      ballPosRef.current = frame.ballPos;
 
       if (currentMinute < 90) {
         rafRef.current = requestAnimationFrame(tick);
       } else {
         setPlaying(false);
-        setBallTarget({ x: 50, y: 32 });
       }
     };
     rafRef.current = requestAnimationFrame(tick);
@@ -140,7 +157,9 @@ export default function Simulator() {
             awayFormation={report.match.awayFormation}
             homeTeam={homeTeam}
             awayTeam={awayTeam}
-            ballTarget={ballTarget}
+            homePositions={homePositions.length ? homePositions : formationPositions(parseFormation(report.match.homeFormation).rows, "home")}
+            awayPositions={awayPositions.length ? awayPositions : formationPositions(parseFormation(report.match.awayFormation).rows, "away")}
+            ballPos={ballPos}
             flashSide={flashSide}
           />
 
