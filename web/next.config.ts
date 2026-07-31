@@ -14,7 +14,17 @@ const nextConfig: NextConfig = {
   // silently wouldn't ship in the Vercel deployment, and every cold start
   // would re-fetch the full Fotmob/Goal.com sitemap from scratch.
   outputFileTracingIncludes: {
-    "/api/search": ["../data/**/*"],
+    // ../data/**: fotmob.ts/goal.ts/stadiumdb.ts's pre-fetched team-name
+    // indexes, read via a dynamic fs.readFile() the tracer can't see.
+    //
+    // playwright-core's own **/*: @sparticuz/chromium's launch path (see
+    // browserLaunch.ts) needs playwright-core's coreBundle.js, which in
+    // turn dynamically requires its own browsers.json at runtime --
+    // confirmed live that this file otherwise silently doesn't ship
+    // ("Cannot find module '.../playwright-core/browsers.json'" on every
+    // production request), the same class of "tracer can't see a dynamic
+    // require" gap as the data/ files above.
+    "/api/search": ["../data/**/*", "../node_modules/playwright-core/**/*"],
   },
 };
 
