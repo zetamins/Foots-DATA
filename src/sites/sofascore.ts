@@ -93,7 +93,16 @@ async function findTeam(page: Page, teamName: string): Promise<SofascoreTeam | n
     `https://www.sofascore.com/api/v1/search/all?q=${encodeURIComponent(teamName)}&page=0`,
   );
   const hit = data.results?.find((r: any) => r.type === "team");
-  if (!hit) return null;
+  if (!hit) {
+    // TEMP DIAGNOSTIC (see next commit for removal): capture what the
+    // search endpoint actually returned so a production-only failure can
+    // be told apart from a genuine "no results" -- couldn't be diagnosed
+    // from the terse "no team found" error alone.
+    if (process.env.VERCEL) {
+      throw new Error(`DIAG no-hit for "${teamName}": ${JSON.stringify(data).slice(0, 500)}`);
+    }
+    return null;
+  }
   return { id: hit.entity.id, name: hit.entity.name, slug: hit.entity.slug };
 }
 
