@@ -1,11 +1,16 @@
 import { runSearch, buildReportJson, buildReportMarkdown } from "../../../../src/search";
 
-// Fluid Compute default on modern Vercel projects supports long-running
-// functions; a full search does dozens of sequential, deliberately-paced
-// requests (Sofascore alone paces itself ~800ms apart) so this can
-// realistically take 1-3 minutes. Lower-tier plans cap duration below this
-// regardless of what's requested here -- see README-web.md.
-export const maxDuration = 800;
+// A full search does dozens of sequential, deliberately-paced requests
+// (Sofascore alone paces itself ~800ms apart) so this can realistically
+// take 1-3 minutes, occasionally longer under load (observed up to ~6min
+// in testing). 300 is the actual ceiling here, not a chosen value -- it's
+// Vercel Hobby plan's hard maxDuration cap for serverless functions
+// (confirmed live: deploying with a higher value fails outright with
+// "Builder returned invalid maxDuration value... must be between 1 and 300
+// for plan hobby"). On Hobby, a search that runs long can still hit this
+// and get killed mid-request -- upgrading to Pro (Fluid Compute, up to 800s)
+// removes the ceiling; this constant would need bumping back up too.
+export const maxDuration = 300;
 
 // NDJSON streaming (one JSON object per line) rather than a single
 // response: a full search takes long enough that a caller with no progress
