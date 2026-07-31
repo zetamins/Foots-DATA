@@ -1,4 +1,4 @@
-import { Activity, BarChart3, Calendar, Clock, Flag, Shield, TrendingUp, Users, type LucideIcon } from "lucide-react";
+import { Activity, BarChart3, Calendar, Clock, Flag, Shield, TrendingUp, UserCheck, Users, type LucideIcon } from "lucide-react";
 import { Card, CardHeader } from "../ui/Card";
 import { Badge } from "../ui/Badge";
 import { StatBar } from "../ui/StatBar";
@@ -11,6 +11,7 @@ const ICONS: Record<Section["icon"], LucideIcon> = {
   shield: Shield,
   activity: Activity,
   users: Users,
+  "user-check": UserCheck,
   "bar-chart": BarChart3,
   clock: Clock,
 };
