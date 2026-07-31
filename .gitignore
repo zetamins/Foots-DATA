@@ -1,0 +1,26 @@
+# dependencies
+node_modules/
+web/node_modules/
+
+# CLI build output
+dist/
+
+# CLI search results -- generated artifacts, not source
+output/
+
+# Next.js
+web/.next/
+web/out/
+web/*.tsbuildinfo
+web/next-env.d.ts
+
+# Vercel
+web/.vercel/
+
+# misc
+.DS_Store
+*.pem
+npm-debug.log*
+
+# local Claude Code tooling state, not project source
+.claude/
