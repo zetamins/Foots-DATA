@@ -502,6 +502,15 @@ export async function getSofascoreTeamProfile(teamName: string): Promise<TeamPro
     for (const t of transfersData?.transfersOut ?? []) {
       transfers.push({ playerName: t.player.name, direction: "out", fromClub: t.fromTeamName ?? null, toClub: t.toTeamName ?? null, date: transferDate(t) });
     }
+    // Sofascore's transfers endpoint isn't scoped to "recent" at all -- it
+    // returns entries spanning multiple transfer windows (confirmed live:
+    // ~11 months back for Arsenal), unsorted. Without sorting, genuinely
+    // distinct dated events (e.g. a player signed, then loaned back to
+    // their old club, then signed again the following window) interleave
+    // in API order and read as exact duplicates. Sorting most-recent-first
+    // fixes the ordering; the date is also now surfaced in search.ts's
+    // display so two same-player entries are visibly different events.
+    transfers.sort((a, b) => (b.date ?? "").localeCompare(a.date ?? ""));
 
     const ages = squad.map((s) => s.age).filter((a): a is number => a != null);
     const injuries = squad.filter((s) => s.injury !== null);

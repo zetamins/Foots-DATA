@@ -57,6 +57,7 @@ import type {
   StreakStabilityInfo,
   TeamProfile,
   TeamStanding,
+  TransferRecord,
   TravelInfo,
   VenueDetails,
 } from "./types";
@@ -461,6 +462,16 @@ function via(fieldSources: Partial<Record<string, FieldSource>>, field: string):
   return src ? ` (via ${src})` : "";
 }
 
+// Sofascore's transfers endpoint spans multiple transfer windows (not just
+// "recent"), pre-sorted most-recent-first (see sofascore.ts) -- the date
+// is included here specifically so two entries for the same player (e.g.
+// signed, then loaned back to their old club, then signed again the
+// following window) read as distinct dated events, not duplicates.
+function transferStr(t: TransferRecord): string {
+  const date = t.date ? ` on ${t.date.slice(0, 10)}` : "";
+  return `${t.playerName} (${t.direction}${t.fromClub && t.toClub ? `, ${t.fromClub} -> ${t.toClub}` : ""}${date})`;
+}
+
 function formResultStr(r: FormResult): string {
   return `${r.result} ${r.scoreline} vs ${r.opponent}${r.margin === 1 ? " (narrow)" : ""}`;
 }
@@ -593,7 +604,7 @@ function printMergedProfile(p: MergedProfile) {
   if (p.missingMidfielders?.length) console.log(`    Missing midfielders: ${p.missingMidfielders.join(", ")}`);
   if (p.recentTransfers?.length) {
     const shown = p.recentTransfers.slice(0, 5);
-    console.log(`    Recent transfers: ${shown.map((t) => `${t.playerName} (${t.direction}${t.fromClub && t.toClub ? `, ${t.fromClub} -> ${t.toClub}` : ""})`).join("; ")}${p.recentTransfers.length > 5 ? ` (+${p.recentTransfers.length - 5} more)` : ""}${via(fs, "recentTransfers")}`);
+    console.log(`    Recent transfers: ${shown.map(transferStr).join("; ")}${p.recentTransfers.length > 5 ? ` (+${p.recentTransfers.length - 5} more)` : ""}${via(fs, "recentTransfers")}`);
   }
   const topScorers = computeTopPerformers(p.squad, "goals");
   const topAssists = computeTopPerformers(p.squad, "assists");
@@ -679,7 +690,7 @@ function mergedProfileMarkdown(p: MergedProfile, lines: string[]) {
   lines.push(`- Injuries: ${p.injuries?.length ? p.injuries.map((m) => `${m.name} - ${m.injury}`).join("; ") : "none reported"}${via(fs, "injuries")}`);
   if (p.keyInjuries?.length) lines.push(`- Key injuries (by squad value): ${p.keyInjuries.map((m) => m.name).join(", ")}${via(fs, "keyInjuries")}`);
   if (p.missingMidfielders?.length) lines.push(`- Missing midfielders: ${p.missingMidfielders.join(", ")}`);
-  if (p.recentTransfers?.length) lines.push(`- Recent transfers: ${p.recentTransfers.map((t) => `${t.playerName} (${t.direction}${t.fromClub && t.toClub ? `, ${t.fromClub} -> ${t.toClub}` : ""})`).join("; ")}${via(fs, "recentTransfers")}`);
+  if (p.recentTransfers?.length) lines.push(`- Recent transfers: ${p.recentTransfers.map(transferStr).join("; ")}${via(fs, "recentTransfers")}`);
   const topScorers = computeTopPerformers(p.squad, "goals");
   const topAssists = computeTopPerformers(p.squad, "assists");
   if (topScorers.length) lines.push(`- Top scorers: ${topScorers.map(performerStr).join(", ")}`);
