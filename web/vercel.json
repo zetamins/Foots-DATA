@@ -2,7 +2,7 @@
   "installCommand": "npm install --prefix .. && npm install",
   "functions": {
     "app/api/search/route.ts": {
-      "memory": 3009
+      "memory": 2048
     }
   }
 }
