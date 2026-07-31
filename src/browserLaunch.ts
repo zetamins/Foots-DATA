@@ -1,4 +1,3 @@
-import { chromium as playwrightChromium } from "playwright";
 import type { Browser } from "playwright-core";
 
 // Sofascore and Squawka both need a real headless Chromium (see their own
@@ -11,6 +10,16 @@ import type { Browser } from "playwright-core";
 // bundled browser) whenever the standard Vercel runtime env var is
 // present. Both branches return the same Browser type, since `playwright`
 // re-exports playwright-core's types under the hood.
+//
+// Both branches use dynamic import() deliberately -- a static top-level
+// `import { chromium } from "playwright"` gets hoisted and evaluated
+// eagerly regardless of which branch actually runs, and since Next.js
+// treats `playwright` as a "server external package" (loaded via real
+// require() at runtime, not bundled), that eager load happens even in
+// production, where `playwright`'s full package is present but its
+// browser binaries were never downloaded -- confirmed live: this exact
+// mistake produced "Cannot find module '.../playwright-core/browsers.json'"
+// on every single request in production, regardless of team searched.
 export async function launchBrowser(): Promise<Browser> {
   if (process.env.VERCEL) {
     const [{ default: sparticuzChromium }, { chromium: chromiumCore }] = await Promise.all([
@@ -23,5 +32,6 @@ export async function launchBrowser(): Promise<Browser> {
       headless: true,
     });
   }
-  return playwrightChromium.launch() as unknown as Promise<Browser>;
+  const { chromium: chromiumFull } = await import("playwright");
+  return chromiumFull.launch() as unknown as Promise<Browser>;
 }
