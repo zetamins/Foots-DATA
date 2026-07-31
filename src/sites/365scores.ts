@@ -144,7 +144,7 @@ function extractTimeline(events: any[] | undefined, homeId: number, nameById: Ma
       type: e.eventType?.name ?? EVENT_TYPE_NAMES[e.eventType?.id] ?? `type ${e.eventType?.id}`,
       detail: null,
       player: nameById.get(e.playerId) ?? null,
-      team: e.competitorId === homeId ? "home" : "away",
+      team: (e.competitorId === homeId ? "home" : "away") as "home" | "away",
     }))
     .sort((a, b) => a.minute - b.minute);
 }
