@@ -7,12 +7,22 @@ import { getSoccerdeskMatches, getSoccerdeskMatchDetails, getSoccerdeskTeamProfi
 import { getGoalMatches, getGoalMatchDetails, getGoalTeamProfile } from "./sites/goal";
 import { get365ScoresMatches, get365ScoresMatchDetails, get365ScoresTeamProfile } from "./sites/365scores";
 import { getStadiumDbVenueDetails } from "./sites/stadiumdb";
-import { getWttrWeather } from "./sites/wttrin";
+import { getWttrWeatherDetail } from "./sites/wttrin";
 import { getSquawkaDefensiveStats } from "./sites/squawka";
-import { countryDistanceKm } from "./geo";
+import { getClubEloRatings } from "./sites/clubelo";
+import { getClubStrengthRatings } from "./sites/statsultra";
+import { getManagerAppointmentDate, getPreviousManager } from "./sites/wikipedia";
+import { getRefereePenaltyCount } from "./sites/worldfootball";
+import { getRefereeHomeAwayBias } from "./sites/footballdata";
+import { getRefereeFoulsPerGame } from "./sites/refsradar";
+import { countryDistanceKm, countryTimezoneDiffHours, travelTimeHours } from "./geo";
 import type {
+  BenchInfo,
   CardDisciplineInfo,
   CardDisciplineVenueSplit,
+  ClubEloRating,
+  ClubStrengthRating,
+  CompetitionFormRecord,
   DefensiveStats,
   DirectPlayExposureFlag,
   SeasonAerialEstimate,
@@ -31,14 +41,17 @@ import type {
   FullbackExposureInfo,
   FormSummary,
   HalfSplitStats,
+  HeadToHeadMeeting,
   HomeAdvantageInfo,
   LineupPlayer,
   LosingStreakContextInfo,
   MatchDetails,
   MatchInfo,
   MatchInsights,
+  MatchType,
   OpponentRankRecord,
   PlayerCardRisk,
+  PlayerUsagePattern,
   PossessionMatchupInfo,
   PresenceEntry,
   RefereeCardRiskNote,
@@ -47,10 +60,12 @@ import type {
   RestComparison,
   RestPerformanceInfo,
   RotationInfo,
+  SeasonAdvancedStatsEstimate,
   SeasonCornersEstimate,
   SeasonShotsEstimate,
   SeasonXGEstimate,
   SquadMember,
+  SquadStrengthInfo,
   StandingsImpactInfo,
   StandingsScenario,
   StandingsZoneInfo,
@@ -60,6 +75,7 @@ import type {
   TransferRecord,
   TravelInfo,
   VenueDetails,
+  VenueSplitForm,
 } from "./types";
 import { stripDiacritics } from "./teamNameMatch";
 
@@ -128,6 +144,8 @@ function computeFormSummary(teamName: string, matches: MatchInfo[]): FormSummary
       scoreline: `${m.homeScore}-${m.awayScore}`,
       venue: home ? "home" : "away",
       margin: Math.abs(teamScore - oppScore),
+      neutralVenue: null,
+      htScoreline: null,
     };
   };
 
@@ -246,9 +264,64 @@ function computeFormSummary(teamName: string, matches: MatchInfo[]): FormSummary
     scorelessStreak = ss;
   }
 
+  // Over/Under lines -- share of the last 10 played matches whose combined
+  // goal total (both sides) exceeded each threshold.
+  const overShare = (line: number) =>
+    last10Played.length ? Math.round((last10Played.filter((r) => totalGoals(r) > line).length / last10Played.length) * 100) : null;
+  const over15SharePct = overShare(1.5);
+  const over25SharePct = overShare(2.5);
+  const over35SharePct = overShare(3.5);
+
+  // % companions to cleanSheetStreak/scorelessStreak -- rate across the last
+  // 10 played matches rather than just the current run.
+  const cleanSheetSharePct = last10Played.length
+    ? Math.round((last10Played.filter((r) => teamGoals(r).against === 0).length / last10Played.length) * 100)
+    : null;
+  const failedToScoreSharePct = last10Played.length
+    ? Math.round((last10Played.filter((r) => teamGoals(r).for === 0).length / last10Played.length) * 100)
+    : null;
+
+  // W/D/L split per competition, from the same played-match sample (not a
+  // fresh fetch) -- competitions the team hasn't played in this sample
+  // simply don't appear, rather than showing a zeroed row.
+  const formByCompetitionMap = new Map<string, { played: number; wins: number; draws: number; losses: number; goalsFor: number; goalsAgainst: number }>();
+  for (const r of allResults) {
+    if (!r.competition) continue;
+    let entry = formByCompetitionMap.get(r.competition);
+    if (!entry) {
+      entry = { played: 0, wins: 0, draws: 0, losses: 0, goalsFor: 0, goalsAgainst: 0 };
+      formByCompetitionMap.set(r.competition, entry);
+    }
+    entry.played++;
+    if (r.result === "W") entry.wins++;
+    else if (r.result === "D") entry.draws++;
+    else entry.losses++;
+    const g = teamGoals(r);
+    entry.goalsFor += g.for;
+    entry.goalsAgainst += g.against;
+  }
+  const formByCompetition: FormSummary["formByCompetition"] = [...formByCompetitionMap.entries()].map(([competition, v]) => ({ competition, ...v }));
+
+  // Rolling played-match count in the trailing 7/14 days as of now -- a
+  // fixture-congestion signal distinct from gapsBetweenLastThree (spacing
+  // between specific matches rather than a count in a fixed window).
+  const matchesLast7Days = played.filter((m) => now - new Date(m.kickoffUtc!).getTime() <= 7 * 86400000).length;
+  const matchesLast14Days = played.filter((m) => now - new Date(m.kickoffUtc!).getTime() <= 14 * 86400000).length;
+
+  // Pre-divided version of the same last10Overall counts/goals already
+  // exposed above (narrowWinSharePct etc. use this same sample) -- not a
+  // new fetch, just the rates spelled out explicitly.
+  const winRatePct = last10Played.length ? Math.round((last10Played.filter((r) => r.result === "W").length / last10Played.length) * 100) : null;
+  const drawRatePct = last10Played.length ? Math.round((last10Played.filter((r) => r.result === "D").length / last10Played.length) * 100) : null;
+  const lossRatePct = last10Played.length ? Math.round((last10Played.filter((r) => r.result === "L").length / last10Played.length) * 100) : null;
+  const pointsPerGame = last10Played.length ? Number((last10Played.reduce((s, r) => s + points(r), 0) / last10Played.length).toFixed(2)) : null;
+  const goalsForPerGame = last10Played.length ? Number((last10Played.reduce((s, r) => s + teamGoals(r).for, 0) / last10Played.length).toFixed(2)) : null;
+  const goalsAgainstPerGame = last10Played.length ? Number((last10Played.reduce((s, r) => s + teamGoals(r).against, 0) / last10Played.length).toFixed(2)) : null;
+
   return {
     last5Overall: allResults.slice(0, 5),
     last10Overall: allResults.slice(0, 10),
+    last20Overall: allResults.slice(0, 20),
     last5Home: allResults.filter((r) => r.venue === "home").slice(0, 5),
     last5Away: allResults.filter((r) => r.venue === "away").slice(0, 5),
     next5WithGaps,
@@ -264,7 +337,295 @@ function computeFormSummary(teamName: string, matches: MatchInfo[]): FormSummary
     bttsSharePct,
     cleanSheetStreak,
     scorelessStreak,
+    over15SharePct,
+    over25SharePct,
+    over35SharePct,
+    cleanSheetSharePct,
+    failedToScoreSharePct,
+    formByCompetition,
+    matchesLast7Days,
+    matchesLast14Days,
+    venueSplitForm: null,
+    winRatePct,
+    drawRatePct,
+    lossRatePct,
+    pointsPerGame,
+    goalsForPerGame,
+    goalsAgainstPerGame,
   };
+}
+
+const ADVANCED_STAT_NAMES = {
+  touchesInBox: "Touches in penalty area",
+  crosses: "Crosses",
+  dribbles: "Dribbles",
+  throughBalls: "Through balls",
+  finalThirdEntries: "Final third entries",
+  recoveries: "Recoveries",
+  errorsLeadToShot: "Errors lead to a shot",
+  errorsLeadToGoal: "Errors lead to a goal",
+  shotsInsideBox: "Shots inside box",
+  shotsOutsideBox: "Shots outside box",
+  shotsOffTarget: "Shots off target",
+  blockedShots: "Blocked shots",
+  offsides: "Offsides",
+  bigChancesScored: "Big chances scored",
+  dispossessed: "Dispossessed",
+  teamTackles: "Total tackles",
+  teamInterceptions: "Interceptions",
+  goalsPrevented: "Goals prevented",
+  bigSaves: "Big saves",
+  highClaims: "High claims",
+  distanceCoveredKm: "Distance covered",
+  sprints: "Number of sprints",
+  teamClearances: "Clearances",
+  freeKicks: "Free kicks",
+} as const;
+
+// Uses parseLeadingInt, not Number() -- some of these stats ("Crosses",
+// "Dribbles") come formatted as "5/12 (42%)" (successful/attempted with a
+// percentage) rather than a plain integer; Number() on that whole string is
+// NaN, while parseLeadingInt correctly reads the leading successful-count.
+// Standalone (not the same-named local in computeFormSummary) -- reads
+// goals-for/against straight off a FormResult's own scoreline+venue, no
+// extra data needed.
+function resultGoals(r: FormResult): { for: number; against: number } {
+  const [h, a] = r.scoreline.split("-").map(Number);
+  return r.venue === "home" ? { for: h, against: a } : { for: a, against: h };
+}
+
+function statFor(matchStats: MatchDetails["matchStats"], name: string, ownVenue: "home" | "away"): number | null {
+  const item = matchStats?.find((s) => s.name === name);
+  if (!item) return null;
+  return parseLeadingInt(ownVenue === "home" ? item.home : item.away);
+}
+
+// ratingSum is an internal accumulator, not part of the public
+// PlayerUsagePattern shape -- stripped off (into avgRating) once tallying
+// is done for the whole sample, see enrichFormWithVenueClassification's
+// return statement.
+type UsageAccumulator = PlayerUsagePattern & { ratingSum: number };
+
+function tallyPlayerStats(entry: UsageAccumulator, p: LineupPlayer) {
+  entry.totalGoals += p.goals ?? 0;
+  entry.totalAssists += p.assists ?? 0;
+  entry.totalXg += p.xg ?? 0;
+  entry.totalXa += p.xa ?? 0;
+  entry.totalShots += p.shots ?? 0;
+  entry.totalShotsOnTarget += p.shotsOnTarget ?? 0;
+  entry.totalTackles += p.tackles ?? 0;
+  entry.totalInterceptions += p.interceptions ?? 0;
+  entry.totalFouls += p.fouls ?? 0;
+  entry.totalKeyPasses += p.keyPasses ?? 0;
+  if (p.rating != null) {
+    entry.ratingSum += p.rating;
+    entry.appearancesWithStats++;
+  }
+}
+
+function tallyUsage(usageByPlayer: Map<string, UsageAccumulator>, lineup: LineupPlayer[] | null, bench: LineupPlayer[] | null) {
+  const get = (name: string) => {
+    let entry = usageByPlayer.get(name);
+    if (!entry) {
+      entry = {
+        matchesInSquad: 0, starts: 0, subAppearances: 0, unusedBench: 0, totalMinutes: 0,
+        totalGoals: 0, totalAssists: 0, totalXg: 0, totalXa: 0, totalShots: 0, totalShotsOnTarget: 0,
+        totalTackles: 0, totalInterceptions: 0, totalFouls: 0, totalKeyPasses: 0, appearancesWithStats: 0, avgRating: null, ratingSum: 0,
+        goalsPer90: null, assistsPer90: null, xgPer90: null, xaPer90: null, keyPassesPer90: null,
+      };
+      usageByPlayer.set(name, entry);
+    }
+    return entry;
+  };
+  for (const p of lineup ?? []) {
+    const entry = get(normalizeTeamName(p.name));
+    entry.matchesInSquad++;
+    entry.starts++;
+    entry.totalMinutes += p.minutesPlayed ?? 0;
+    tallyPlayerStats(entry, p);
+  }
+  for (const p of bench ?? []) {
+    const entry = get(normalizeTeamName(p.name));
+    entry.matchesInSquad++;
+    if (p.minutesPlayed != null) {
+      entry.subAppearances++;
+      tallyPlayerStats(entry, p);
+      entry.totalMinutes += p.minutesPlayed;
+    } else {
+      entry.unusedBench++;
+    }
+  }
+}
+
+// Fetches full match details for each of the last20Overall results (bounded
+// window, not the entire played history -- see VenueSplitForm's doc comment
+// on the cost/sample-size tradeoff) to find out where each match was
+// ACTUALLY played, not just which side of the fixture data the team was
+// listed on. A match counts as neutral when the venue's country doesn't
+// match the team's own country on that specific match's own record (each
+// details() fetch carries its own homeTeamCountry/awayTeamCountry/
+// venueCountry, so no separate "team's home country" lookup is needed).
+// The same per-match fetch also carries matchStats and lineup/bench
+// statistics, so advanced-stats aggregation (SeasonAdvancedStatsEstimate)
+// and per-player usage (PlayerUsagePattern) ride along at zero extra
+// requests -- see those types' doc comments. Best-effort per match
+// throughout: a handful of failed fetches just leave those entries/stats
+// undetermined rather than failing the whole enrichment.
+async function enrichFormWithVenueClassification(
+  rawMatches: MatchInfo[],
+  form: FormSummary,
+  teamName: string,
+  source: Source,
+): Promise<{ form: FormSummary; advancedStats: SeasonAdvancedStatsEstimate | null; usageByPlayer: Map<string, PlayerUsagePattern> }> {
+  const enriched: FormResult[] = [];
+  const statTotals: Record<string, { for: number; against: number; n: number }> = {};
+  for (const key of Object.keys(ADVANCED_STAT_NAMES)) statTotals[key] = { for: 0, against: 0, n: 0 };
+  const usageByPlayer = new Map<string, UsageAccumulator>();
+  let xaFor = 0;
+  let xaAgainst = 0;
+  const sumXa = (lineup: LineupPlayer[] | null, bench: LineupPlayer[] | null) =>
+    [...(lineup ?? []), ...(bench ?? [])].reduce((s, p) => s + (p.xa ?? 0), 0);
+  let cornerGoalsFor = 0, cornerGoalsAgainst = 0, penaltyGoalsFor = 0, penaltyGoalsAgainst = 0, freeKickGoalsFor = 0, freeKickGoalsAgainst = 0;
+
+  for (const result of form.last20Overall) {
+    const raw = rawMatches.find((m) => m.kickoffUtc === result.date && (normalizeTeamName(m.homeTeam) === normalizeTeamName(result.opponent) || normalizeTeamName(m.awayTeam) === normalizeTeamName(result.opponent)));
+    if (!raw) {
+      enriched.push(result);
+      continue;
+    }
+    try {
+      const details = await scrapers[source].details(raw);
+      const ownCountry = result.venue === "home" ? details.homeTeamCountry : details.awayTeamCountry;
+      const neutralVenue = ownCountry && details.venueCountry ? ownCountry !== details.venueCountry : null;
+      const htScoreline =
+        details.homeScoreHT != null && details.awayScoreHT != null
+          ? result.venue === "home"
+            ? `${details.homeScoreHT}-${details.awayScoreHT}`
+            : `${details.awayScoreHT}-${details.homeScoreHT}`
+          : null;
+      enriched.push({ ...result, neutralVenue, htScoreline });
+
+      for (const [key, statName] of Object.entries(ADVANCED_STAT_NAMES)) {
+        const forVal = statFor(details.matchStats, statName, result.venue);
+        const againstVal = statFor(details.matchStats, statName, result.venue === "home" ? "away" : "home");
+        if (forVal != null && againstVal != null) {
+          statTotals[key].for += forVal;
+          statTotals[key].against += againstVal;
+          statTotals[key].n++;
+        }
+      }
+
+      const ownLineup = result.venue === "home" ? details.homeLineup : details.awayLineup;
+      const ownBench = result.venue === "home" ? details.homeBench : details.awayBench;
+      const oppLineup = result.venue === "home" ? details.awayLineup : details.homeLineup;
+      const oppBench = result.venue === "home" ? details.awayBench : details.homeBench;
+      tallyUsage(usageByPlayer, ownLineup, ownBench);
+      xaFor += sumXa(ownLineup, ownBench);
+      xaAgainst += sumXa(oppLineup, oppBench);
+
+      if (details.setPieceGoals) {
+        const own = result.venue === "home" ? details.setPieceGoals.home : details.setPieceGoals.away;
+        const opp = result.venue === "home" ? details.setPieceGoals.away : details.setPieceGoals.home;
+        cornerGoalsFor += own.corner;
+        cornerGoalsAgainst += opp.corner;
+        penaltyGoalsFor += own.penalty;
+        penaltyGoalsAgainst += opp.penalty;
+        freeKickGoalsFor += own.freeKick;
+        freeKickGoalsAgainst += opp.freeKick;
+      }
+    } catch {
+      enriched.push(result);
+    }
+  }
+
+  let homeSampleSize = 0, homeWins = 0, homeDraws = 0, homeLosses = 0, homeGoalsFor = 0, homeGoalsAgainst = 0;
+  let awaySampleSize = 0, awayWins = 0, awayDraws = 0, awayLosses = 0, awayGoalsFor = 0, awayGoalsAgainst = 0;
+  let neutralSampleSize = 0, neutralWins = 0, neutralDraws = 0, neutralLosses = 0, neutralGoalsFor = 0, neutralGoalsAgainst = 0;
+  for (const r of enriched) {
+    if (r.neutralVenue == null) continue;
+    const bucket = r.neutralVenue ? "neutral" : r.venue;
+    const g = resultGoals(r);
+    if (bucket === "neutral") {
+      neutralSampleSize++;
+      neutralGoalsFor += g.for;
+      neutralGoalsAgainst += g.against;
+      if (r.result === "W") neutralWins++;
+      else if (r.result === "D") neutralDraws++;
+      else neutralLosses++;
+    } else if (bucket === "home") {
+      homeSampleSize++;
+      homeGoalsFor += g.for;
+      homeGoalsAgainst += g.against;
+      if (r.result === "W") homeWins++;
+      else if (r.result === "D") homeDraws++;
+      else homeLosses++;
+    } else {
+      awaySampleSize++;
+      awayGoalsFor += g.for;
+      awayGoalsAgainst += g.against;
+      if (r.result === "W") awayWins++;
+      else if (r.result === "D") awayDraws++;
+      else awayLosses++;
+    }
+  }
+  const venueSplitForm: VenueSplitForm | null = enriched.some((r) => r.neutralVenue != null)
+    ? {
+        homeSampleSize, homeWins, homeDraws, homeLosses, homeGoalsFor, homeGoalsAgainst,
+        awaySampleSize, awayWins, awayDraws, awayLosses, awayGoalsFor, awayGoalsAgainst,
+        neutralSampleSize, neutralWins, neutralDraws, neutralLosses, neutralGoalsFor, neutralGoalsAgainst,
+      }
+    : null;
+
+  const maxN = Math.max(...Object.values(statTotals).map((t) => t.n));
+  const advancedStats: SeasonAdvancedStatsEstimate | null = maxN
+    ? {
+        sampleSize: maxN,
+        touchesInBoxFor: statTotals.touchesInBox.for, touchesInBoxAgainst: statTotals.touchesInBox.against,
+        crossesFor: statTotals.crosses.for, crossesAgainst: statTotals.crosses.against,
+        dribblesFor: statTotals.dribbles.for, dribblesAgainst: statTotals.dribbles.against,
+        throughBallsFor: statTotals.throughBalls.for, throughBallsAgainst: statTotals.throughBalls.against,
+        finalThirdEntriesFor: statTotals.finalThirdEntries.for, finalThirdEntriesAgainst: statTotals.finalThirdEntries.against,
+        recoveriesFor: statTotals.recoveries.for, recoveriesAgainst: statTotals.recoveries.against,
+        errorsLeadToShotFor: statTotals.errorsLeadToShot.for, errorsLeadToShotAgainst: statTotals.errorsLeadToShot.against,
+        shotsInsideBoxFor: statTotals.shotsInsideBox.for, shotsInsideBoxAgainst: statTotals.shotsInsideBox.against,
+        shotsOutsideBoxFor: statTotals.shotsOutsideBox.for, shotsOutsideBoxAgainst: statTotals.shotsOutsideBox.against,
+        shotsOffTargetFor: statTotals.shotsOffTarget.for, shotsOffTargetAgainst: statTotals.shotsOffTarget.against,
+        blockedShotsFor: statTotals.blockedShots.for, blockedShotsAgainst: statTotals.blockedShots.against,
+        offsidesFor: statTotals.offsides.for, offsidesAgainst: statTotals.offsides.against,
+        bigChancesScoredFor: statTotals.bigChancesScored.for, bigChancesScoredAgainst: statTotals.bigChancesScored.against,
+        dispossessedFor: statTotals.dispossessed.for, dispossessedAgainst: statTotals.dispossessed.against,
+        teamTacklesFor: statTotals.teamTackles.for, teamTacklesAgainst: statTotals.teamTackles.against,
+        teamInterceptionsFor: statTotals.teamInterceptions.for, teamInterceptionsAgainst: statTotals.teamInterceptions.against,
+        goalsPreventedFor: statTotals.goalsPrevented.for, goalsPreventedAgainst: statTotals.goalsPrevented.against,
+        bigSavesFor: statTotals.bigSaves.for, bigSavesAgainst: statTotals.bigSaves.against,
+        highClaimsFor: statTotals.highClaims.for, highClaimsAgainst: statTotals.highClaims.against,
+        distanceCoveredKmFor: statTotals.distanceCoveredKm.for, distanceCoveredKmAgainst: statTotals.distanceCoveredKm.against,
+        sprintsFor: statTotals.sprints.for, sprintsAgainst: statTotals.sprints.against,
+        teamClearancesFor: statTotals.teamClearances.for, teamClearancesAgainst: statTotals.teamClearances.against,
+        freeKicksFor: statTotals.freeKicks.for, freeKicksAgainst: statTotals.freeKicks.against,
+        xaFor: Number(xaFor.toFixed(2)), xaAgainst: Number(xaAgainst.toFixed(2)),
+        cornerGoalsFor, cornerGoalsAgainst, penaltyGoalsFor, penaltyGoalsAgainst, freeKickGoalsFor, freeKickGoalsAgainst,
+        errorsLeadToGoalFor: statTotals.errorsLeadToGoal.for, errorsLeadToGoalAgainst: statTotals.errorsLeadToGoal.against,
+        source,
+      }
+    : null;
+
+  const finalizedUsage = new Map<string, PlayerUsagePattern>();
+  for (const [name, entry] of usageByPlayer) {
+    const { ratingSum, ...rest } = entry;
+    const per90 = (total: number) => (entry.totalMinutes ? Number(((total / entry.totalMinutes) * 90).toFixed(2)) : null);
+    finalizedUsage.set(name, {
+      ...rest,
+      avgRating: entry.appearancesWithStats ? Number((ratingSum / entry.appearancesWithStats).toFixed(2)) : null,
+      goalsPer90: per90(entry.totalGoals),
+      assistsPer90: per90(entry.totalAssists),
+      xgPer90: per90(entry.totalXg),
+      xaPer90: per90(entry.totalXa),
+      keyPassesPer90: per90(entry.totalKeyPasses),
+    });
+  }
+
+  return { form: { ...form, last20Overall: enriched, venueSplitForm }, advancedStats, usageByPlayer: finalizedUsage };
 }
 
 function isEmpty(v: any): boolean {
@@ -344,6 +705,23 @@ function isDefenderRole(role: string | null): boolean {
 function computeMissingMidfielders(injuries: TeamProfile["injuries"]): string[] | null {
   if (!injuries) return null;
   return injuries.filter((p) => isMidfieldRole(p.role)).map((p) => p.name);
+}
+
+// Same format-tolerance approach as isMidfieldRole/isDefenderRole.
+function isAttackerRole(role: string | null): boolean {
+  if (!role) return false;
+  const r = role.toUpperCase();
+  return r === "F" || r === "A" || role.toLowerCase().includes("forward") || role.toLowerCase().includes("attack") || role.toLowerCase().includes("striker");
+}
+
+function isGoalkeeperRole(role: string | null): boolean {
+  if (!role) return false;
+  return role.toUpperCase() === "G" || role.toUpperCase() === "GK" || role.toLowerCase().includes("goalkeeper") || role.toLowerCase().includes("keeper");
+}
+
+function computeMissingByRole(injuries: TeamProfile["injuries"], matches: (role: string | null) => boolean): string[] | null {
+  if (!injuries) return null;
+  return injuries.filter((p) => matches(p.role)).map((p) => p.name);
 }
 
 // Only Goal.com's squad carries per-player season stats, and it abbreviates
@@ -432,6 +810,65 @@ function computeTopDefenders(squad: SquadMember[] | null, count = 3): TopDefende
     .map((m) => ({ name: m.name, tacklesMade: m.defensiveStats!.tacklesMade ?? 0, interceptions: m.defensiveStats!.interceptions ?? 0 }));
 }
 
+interface BenchRegular {
+  name: string;
+  matchesInSquad: number;
+  starts: number;
+  subAppearances: number;
+  unusedBench: number;
+}
+
+// Players named in the matchday squad (last20Overall sample) more often
+// than they actually started -- i.e. genuinely bench-regular, not just
+// "happened to miss one game." Requires at least 2 non-start appearances
+// (sub-on or unused) to filter out a single one-off absence reading as a
+// pattern.
+function computeBenchRegulars(squad: SquadMember[] | null, count = 5): BenchRegular[] {
+  if (!squad) return [];
+  return squad
+    .filter((m) => m.recentUsage && m.recentUsage.subAppearances + m.recentUsage.unusedBench >= 2 && m.recentUsage.subAppearances + m.recentUsage.unusedBench > m.recentUsage.starts)
+    .sort((a, b) => (b.recentUsage!.matchesInSquad ?? 0) - (a.recentUsage!.matchesInSquad ?? 0))
+    .slice(0, count)
+    .map((m) => ({ name: m.name, matchesInSquad: m.recentUsage!.matchesInSquad, starts: m.recentUsage!.starts, subAppearances: m.recentUsage!.subAppearances, unusedBench: m.recentUsage!.unusedBench }));
+}
+
+interface RecentFormLeader {
+  name: string;
+  goals: number;
+  assists: number;
+  xg: number;
+  xa: number;
+  avgRating: number | null;
+  goalsPer90: number | null;
+  assistsPer90: number | null;
+  keyPasses: number;
+  sampleSize: number;
+}
+
+// Same "last 10 played, real per-match data" scope as everything else the
+// venue-classification enrichment produces -- distinct from the season-wide
+// totals topScorers/topAssists already show, this is specifically recent
+// form.
+function computeRecentFormLeaders(squad: SquadMember[] | null, count = 3): RecentFormLeader[] {
+  if (!squad) return [];
+  return squad
+    .filter((m) => m.recentUsage && m.recentUsage.totalGoals + m.recentUsage.totalAssists > 0)
+    .sort((a, b) => (b.recentUsage!.totalGoals + b.recentUsage!.totalAssists) - (a.recentUsage!.totalGoals + a.recentUsage!.totalAssists))
+    .slice(0, count)
+    .map((m) => ({
+      name: m.name,
+      goals: m.recentUsage!.totalGoals,
+      assists: m.recentUsage!.totalAssists,
+      xg: Number(m.recentUsage!.totalXg.toFixed(2)),
+      xa: Number(m.recentUsage!.totalXa.toFixed(2)),
+      avgRating: m.recentUsage!.avgRating,
+      goalsPer90: m.recentUsage!.goalsPer90,
+      assistsPer90: m.recentUsage!.assistsPer90,
+      keyPasses: m.recentUsage!.totalKeyPasses,
+      sampleSize: m.recentUsage!.matchesInSquad,
+    }));
+}
+
 function mergeTeamProfile(bySource: Map<Source, TeamProfile>): MergedProfile {
   const baseSource = SOURCE_ORDER.find((s) => bySource.has(s)) ?? [...bySource.keys()][0];
   const base = bySource.get(baseSource)!;
@@ -452,6 +889,9 @@ function mergeTeamProfile(bySource: Map<Source, TeamProfile>): MergedProfile {
   }
 
   merged.missingMidfielders = computeMissingMidfielders(merged.injuries);
+  merged.missingAttackers = computeMissingByRole(merged.injuries, isAttackerRole);
+  merged.missingDefenders = computeMissingByRole(merged.injuries, isDefenderRole);
+  merged.missingGoalkeepers = computeMissingByRole(merged.injuries, isGoalkeeperRole);
   if (merged.squad) merged.squad = enrichSquadWithSeasonStats(merged.squad, bySource);
 
   return { ...merged, baseSource, fieldSources };
@@ -460,6 +900,26 @@ function mergeTeamProfile(bySource: Map<Source, TeamProfile>): MergedProfile {
 function via(fieldSources: Partial<Record<string, FieldSource>>, field: string): string {
   const src = fieldSources[field];
   return src ? ` (via ${src})` : "";
+}
+
+function refereeStatsStr(rs: RefereeStats): string {
+  const penalties = rs.penaltiesAwarded != null ? `, ${rs.penaltiesAwarded} penalties this season (via worldfootball.net)` : "";
+  const bias = rs.homeAwayBias ? `, home ${rs.homeAwayBias.homeCardsPerGame} vs away ${rs.homeAwayBias.awayCardsPerGame} cards/game (n=${rs.homeAwayBias.sampleSize}, via football-data.co.uk)` : "";
+  const fouls = rs.foulsPerGame != null ? `, ${rs.foulsPerGame} fouls/game (via refsradar.com)` : "";
+  return `${rs.games} games, ${rs.yellowCards} yellow / ${rs.redCards} red, ${rs.yellowCardsPerGame} yellow/game${penalties}${bias}${fouls}`;
+}
+
+function isRecentAppointment(appointedDate: string | null): boolean | null {
+  if (!appointedDate) return null;
+  return Date.now() - new Date(appointedDate).getTime() <= 90 * 86400000;
+}
+
+function managerStr(m: MatchDetails["homeManager"]): string {
+  if (!m) return "unknown";
+  const tenure = m.appointedDate ? `, appointed ${m.appointedDate.slice(0, 10)} (via Wikipedia)` : "";
+  const recent = m.recentAppointment ? " -- recent managerial change" : "";
+  const previous = m.previousManager ? `, previously ${m.previousManager}` : "";
+  return `${m.name}${m.country ? ` (${m.country})` : ""}${tenure}${recent}${previous}`;
 }
 
 // Sofascore's transfers endpoint spans multiple transfer windows (not just
@@ -473,15 +933,31 @@ function transferStr(t: TransferRecord): string {
 }
 
 function formResultStr(r: FormResult): string {
-  return `${r.result} ${r.scoreline} vs ${r.opponent}${r.margin === 1 ? " (narrow)" : ""}`;
+  const ht = r.htScoreline ? ` (HT ${r.htScoreline})` : "";
+  return `${r.result} ${r.scoreline}${ht} vs ${r.opponent}${r.margin === 1 ? " (narrow)" : ""}`;
+}
+
+function meetingStr(m: HeadToHeadMeeting): string {
+  const xg = m.homeXg != null && m.awayXg != null ? `, xG ${m.homeXg}-${m.awayXg}` : "";
+  return `${m.date?.slice(0, 10) ?? "?"} ${m.scoreline}${m.homeFormation && m.awayFormation ? ` (${m.homeFormation} v ${m.awayFormation})` : ""}${xg}`;
 }
 
 function halfSplitStr(h: HalfSplitStats): string {
   return `1H ${h.firstHalfGoalsFor}-${h.firstHalfGoalsAgainst}, 2H ${h.secondHalfGoalsFor}-${h.secondHalfGoalsAgainst} (n=${h.sampleSize})`;
 }
 
+function competitionFormStr(c: CompetitionFormRecord): string {
+  return `${c.competition} ${c.wins}W-${c.draws}D-${c.losses}L, ${c.goalsFor}-${c.goalsAgainst} goals`;
+}
+
+function venueSplitFormStr(v: VenueSplitForm): string {
+  return `home ${v.homeWins}W-${v.homeDraws}D-${v.homeLosses}L, ${v.homeGoalsFor}-${v.homeGoalsAgainst} goals (n=${v.homeSampleSize}) / away ${v.awayWins}W-${v.awayDraws}D-${v.awayLosses}L, ${v.awayGoalsFor}-${v.awayGoalsAgainst} goals (n=${v.awaySampleSize}) / neutral ${v.neutralWins}W-${v.neutralDraws}D-${v.neutralLosses}L, ${v.neutralGoalsFor}-${v.neutralGoalsAgainst} goals (n=${v.neutralSampleSize})`;
+}
+
 function printFormSummary(f: FormSummary) {
   if (f.last5Overall.length) console.log(`  Last 5 (all):  ${f.last5Overall.map(formResultStr).join(", ")}`);
+  const withHt = f.last20Overall.filter((r) => r.htScoreline);
+  if (withHt.length) console.log(`  With HT score: ${withHt.map(formResultStr).join(", ")}`);
   if (f.last5Home.length) console.log(`  Last 5 (home): ${f.last5Home.map(formResultStr).join(", ")}`);
   if (f.last5Away.length) console.log(`  Last 5 (away): ${f.last5Away.map(formResultStr).join(", ")}`);
   if (f.next5WithGaps.length) {
@@ -498,10 +974,18 @@ function printFormSummary(f: FormSummary) {
   if (f.bttsSharePct != null) console.log(`  BTTS:          ${f.bttsSharePct}% of last 10 played matches had both teams scoring`);
   if (f.cleanSheetStreak != null && f.cleanSheetStreak >= 2) console.log(`  Clean sheets:  ${f.cleanSheetStreak}-game clean sheet streak`);
   if (f.scorelessStreak != null && f.scorelessStreak >= 2) console.log(`  Scoreless:     ${f.scorelessStreak}-game scoreless streak`);
+  if (f.over25SharePct != null) console.log(`  Over/Under:    O1.5 ${f.over15SharePct}% / O2.5 ${f.over25SharePct}% / O3.5 ${f.over35SharePct}% (last 10 played)`);
+  if (f.cleanSheetSharePct != null) console.log(`  CS% / FTS%:    ${f.cleanSheetSharePct}% clean sheets / ${f.failedToScoreSharePct}% failed to score (last 10 played)`);
+  if (f.formByCompetition.length > 1) console.log(`  By competition: ${f.formByCompetition.map(competitionFormStr).join(" | ")}`);
+  console.log(`  Congestion:    ${f.matchesLast7Days} matches in last 7 days, ${f.matchesLast14Days} in last 14 days`);
+  if (f.winRatePct != null) console.log(`  Rates (last 10): W${f.winRatePct}%/D${f.drawRatePct}%/L${f.lossRatePct}%, ${f.pointsPerGame} ppg, ${f.goalsForPerGame}-${f.goalsAgainstPerGame} goals/game`);
+  if (f.venueSplitForm) console.log(`  Venue split (true venue not fixture label): ${venueSplitFormStr(f.venueSplitForm)}`);
 }
 
 function formSummaryMarkdown(f: FormSummary, lines: string[]) {
   if (f.last5Overall.length) lines.push(`- Last 5 (all): ${f.last5Overall.map(formResultStr).join(", ")}`);
+  const withHt = f.last20Overall.filter((r) => r.htScoreline);
+  if (withHt.length) lines.push(`- With HT score: ${withHt.map(formResultStr).join(", ")}`);
   if (f.last5Home.length) lines.push(`- Last 5 (home): ${f.last5Home.map(formResultStr).join(", ")}`);
   if (f.last5Away.length) lines.push(`- Last 5 (away): ${f.last5Away.map(formResultStr).join(", ")}`);
   if (f.next5WithGaps.length) {
@@ -518,26 +1002,37 @@ function formSummaryMarkdown(f: FormSummary, lines: string[]) {
   if (f.bttsSharePct != null) lines.push(`- BTTS: ${f.bttsSharePct}% of last 10 played matches had both teams scoring`);
   if (f.cleanSheetStreak != null && f.cleanSheetStreak >= 2) lines.push(`- Clean sheets: ${f.cleanSheetStreak}-game clean sheet streak`);
   if (f.scorelessStreak != null && f.scorelessStreak >= 2) lines.push(`- Scoreless: ${f.scorelessStreak}-game scoreless streak`);
+  if (f.over25SharePct != null) lines.push(`- Over/Under (last 10): O1.5 ${f.over15SharePct}% / O2.5 ${f.over25SharePct}% / O3.5 ${f.over35SharePct}%`);
+  if (f.cleanSheetSharePct != null) lines.push(`- Clean sheet / failed-to-score rate (last 10): ${f.cleanSheetSharePct}% / ${f.failedToScoreSharePct}%`);
+  if (f.formByCompetition.length > 1) lines.push(`- Form by competition: ${f.formByCompetition.map(competitionFormStr).join(" | ")}`);
+  lines.push(`- Fixture congestion: ${f.matchesLast7Days} matches in last 7 days, ${f.matchesLast14Days} in last 14 days`);
+  if (f.winRatePct != null) lines.push(`- Rates (last 10): W${f.winRatePct}%/D${f.drawRatePct}%/L${f.lossRatePct}%, ${f.pointsPerGame} ppg, ${f.goalsForPerGame}-${f.goalsAgainstPerGame} goals/game`);
+  if (f.venueSplitForm) lines.push(`- Venue split (true venue not fixture label): ${venueSplitFormStr(f.venueSplitForm)}`);
 }
 
 function printMergedDetails(d: MergedMatch) {
   console.log(`  Next match: ${d.homeTeam} vs ${d.awayTeam}  [base: ${d.baseSource}]`);
   console.log(`    Kickoff:     ${formatWhen(d.kickoffUtc)}`);
-  console.log(`    Competition: ${d.competition ?? "unknown"}`);
+  console.log(`    Competition: ${d.competition ?? "unknown"}${d.season ? ` (${d.season})` : ""}${d.round != null ? `, round ${d.round}` : ""}`);
   console.log(`    Status:      ${d.status}`);
   const fs = d.fieldSources;
   if (d.venueName) console.log(`    Venue:       ${d.venueName}${d.venueCity ? `, ${d.venueCity}` : ""}${d.venueCountry ? `, ${d.venueCountry}` : ""}${via(fs, "venueName")}`);
   if (d.referee) {
     const rs = d.refereeStats;
-    console.log(`    Referee:     ${d.referee}${rs ? ` (${rs.games} games, ${rs.yellowCards} yellow / ${rs.redCards} red, ${rs.yellowCardsPerGame} yellow/game)` : ""}${via(fs, "referee")}`);
+    console.log(`    Referee:     ${d.referee}${rs ? ` (${refereeStatsStr(rs)})` : ""}${via(fs, "referee")}`);
   }
   if (d.attendance) console.log(`    Attendance:  ${d.attendance}${via(fs, "attendance")}`);
   if (d.weather) console.log(`    Weather:     ${d.weather}${via(fs, "weather")}`);
+  if (d.weatherDetail) {
+    const w = d.weatherDetail;
+    console.log(`    Weather detail: humidity ${w.humidityPct ?? "n/a"}%, wind ${w.windSpeedKmph ?? "n/a"} km/h, precip ${w.precipMM ?? "n/a"} mm${via(fs, "weatherDetail")}`);
+  }
   if (d.headToHeadSummary) {
     const h = d.headToHeadSummary;
     console.log(`    H2H:         ${d.homeTeam} ${h.homeWins}W - ${h.draws}D - ${h.awayWins}W ${d.awayTeam}${via(fs, "headToHeadSummary")}`);
   }
   if (d.headToHeadStreaks?.length) console.log(`    H2H streaks: ${d.headToHeadStreaks.join("; ")}${via(fs, "headToHeadStreaks")}`);
+  if (d.recentMeetings?.length) console.log(`    Recent meetings: ${d.recentMeetings.map(meetingStr).join(" | ")}`);
   if (d.homeTeamStanding) {
     const s = d.homeTeamStanding;
     console.log(`    ${d.homeTeam} rank: #${s.position} (${s.points} pts, ${s.wins}W-${s.draws}D-${s.losses}L, ${s.goalDiff})${via(fs, "homeTeamStanding")}`);
@@ -562,9 +1057,7 @@ function printMergedDetails(d: MergedMatch) {
   if (d.awayFormation) console.log(`    ${d.awayTeam} formation: ${d.awayFormation}${via(fs, "awayFormation")}`);
   if (d.awayLineup?.length) console.log(`    ${d.awayTeam} lineup: ${d.awayLineup.map((p) => p.name).join(", ")}${via(fs, "awayLineup")}`);
   if (d.homeManager || d.awayManager) {
-    console.log(
-      `    Managers:    ${d.homeTeam}: ${d.homeManager ? `${d.homeManager.name}${d.homeManager.country ? ` (${d.homeManager.country})` : ""}` : "unknown"} | ${d.awayTeam}: ${d.awayManager ? `${d.awayManager.name}${d.awayManager.country ? ` (${d.awayManager.country})` : ""}` : "unknown"} (via sofascore)`,
-    );
+    console.log(`    Managers:    ${d.homeTeam}: ${managerStr(d.homeManager)} | ${d.awayTeam}: ${managerStr(d.awayManager)} (via sofascore)`);
   }
   if (d.homeManagerVsAwayClub?.sampleSize) {
     const r = d.homeManagerVsAwayClub;
@@ -594,6 +1087,16 @@ function defenderStr(d: TopDefender): string {
   return `${d.name} (${d.tacklesMade} tackles, ${d.interceptions} interceptions)`;
 }
 
+function benchRegularStr(b: BenchRegular): string {
+  return `${b.name} (${b.starts} starts, ${b.subAppearances} sub apps, ${b.unusedBench} unused, of ${b.matchesInSquad})`;
+}
+
+function recentFormLeaderStr(r: RecentFormLeader): string {
+  const per90 = r.goalsPer90 != null ? `, ${r.goalsPer90}g/${r.assistsPer90}a per 90` : "";
+  const keyPasses = r.keyPasses > 0 ? `, ${r.keyPasses} key passes` : "";
+  return `${r.name} (${r.goals}g/${r.assists}a, ${r.xg}xG/${r.xa}xA${keyPasses}${per90}${r.avgRating != null ? `, ${r.avgRating} avg rating` : ""}, n=${r.sampleSize})`;
+}
+
 function printMergedProfile(p: MergedProfile) {
   const fs = p.fieldSources;
   console.log(`  Team profile (${p.teamName})  [base: ${p.baseSource}]:`);
@@ -602,6 +1105,9 @@ function printMergedProfile(p: MergedProfile) {
   else console.log(`    Injuries: none reported`);
   if (p.keyInjuries?.length) console.log(`    Key injuries (by squad value): ${p.keyInjuries.map((m) => m.name).join(", ")}${via(fs, "keyInjuries")}`);
   if (p.missingMidfielders?.length) console.log(`    Missing midfielders: ${p.missingMidfielders.join(", ")}`);
+  if (p.missingAttackers?.length) console.log(`    Missing attackers: ${p.missingAttackers.join(", ")}`);
+  if (p.missingDefenders?.length) console.log(`    Missing defenders: ${p.missingDefenders.join(", ")}`);
+  if (p.missingGoalkeepers?.length) console.log(`    Missing goalkeepers: ${p.missingGoalkeepers.join(", ")}`);
   if (p.recentTransfers?.length) {
     const shown = p.recentTransfers.slice(0, 5);
     console.log(`    Recent transfers: ${shown.map(transferStr).join("; ")}${p.recentTransfers.length > 5 ? ` (+${p.recentTransfers.length - 5} more)` : ""}${via(fs, "recentTransfers")}`);
@@ -612,6 +1118,10 @@ function printMergedProfile(p: MergedProfile) {
   if (topAssists.length) console.log(`    Top assists: ${topAssists.map(performerStr).join(", ")}`);
   const topDefenders = computeTopDefenders(p.squad);
   if (topDefenders.length) console.log(`    Top defenders (via squawka): ${topDefenders.map(defenderStr).join(", ")}`);
+  const benchRegulars = computeBenchRegulars(p.squad);
+  if (benchRegulars.length) console.log(`    Bench regulars (last 20): ${benchRegulars.map(benchRegularStr).join(", ")}`);
+  const recentFormLeaders = computeRecentFormLeaders(p.squad);
+  if (recentFormLeaders.length) console.log(`    Recent form (last 20): ${recentFormLeaders.map(recentFormLeaderStr).join(", ")}`);
 }
 
 function slugify(s: string): string {
@@ -622,20 +1132,25 @@ function mergedMatchMarkdown(d: MergedMatch, lines: string[]) {
   lines.push(`**${d.homeTeam} vs ${d.awayTeam}** _(base: ${d.baseSource})_`, "");
   const fs = d.fieldSources;
   lines.push(`- Kickoff: ${formatWhen(d.kickoffUtc)}`);
-  lines.push(`- Competition: ${d.competition ?? "unknown"}`);
+  lines.push(`- Competition: ${d.competition ?? "unknown"}${d.season ? ` (${d.season})` : ""}${d.round != null ? `, round ${d.round}` : ""}`);
   lines.push(`- Status: ${d.status}`);
   if (d.venueName) lines.push(`- Venue: ${d.venueName}${d.venueCity ? `, ${d.venueCity}` : ""}${d.venueCountry ? `, ${d.venueCountry}` : ""}${via(fs, "venueName")}`);
   if (d.referee) {
     const rs = d.refereeStats;
-    lines.push(`- Referee: ${d.referee}${rs ? ` (${rs.games} games, ${rs.yellowCards} yellow / ${rs.redCards} red, ${rs.yellowCardsPerGame} yellow/game)` : ""}${via(fs, "referee")}`);
+    lines.push(`- Referee: ${d.referee}${rs ? ` (${refereeStatsStr(rs)})` : ""}${via(fs, "referee")}`);
   }
   if (d.attendance) lines.push(`- Attendance: ${d.attendance}${via(fs, "attendance")}`);
   if (d.weather) lines.push(`- Weather: ${d.weather}${via(fs, "weather")}`);
+  if (d.weatherDetail) {
+    const w = d.weatherDetail;
+    lines.push(`- Weather detail: humidity ${w.humidityPct ?? "n/a"}%, wind ${w.windSpeedKmph ?? "n/a"} km/h, precip ${w.precipMM ?? "n/a"} mm${via(fs, "weatherDetail")}`);
+  }
   if (d.headToHeadSummary) {
     const h = d.headToHeadSummary;
     lines.push(`- H2H: ${d.homeTeam} ${h.homeWins}W - ${h.draws}D - ${h.awayWins}W ${d.awayTeam}${via(fs, "headToHeadSummary")}`);
   }
   if (d.headToHeadStreaks?.length) lines.push(`- H2H streaks: ${d.headToHeadStreaks.join("; ")}${via(fs, "headToHeadStreaks")}`);
+  if (d.recentMeetings?.length) lines.push(`- Recent meetings: ${d.recentMeetings.map(meetingStr).join(" | ")}`);
   if (d.homeTeamStanding) {
     const s = d.homeTeamStanding;
     lines.push(`- ${d.homeTeam} rank: #${s.position} (${s.points} pts, ${s.wins}W-${s.draws}D-${s.losses}L, ${s.goalDiff})${via(fs, "homeTeamStanding")}`);
@@ -660,9 +1175,7 @@ function mergedMatchMarkdown(d: MergedMatch, lines: string[]) {
   if (d.awayFormation) lines.push(`- ${d.awayTeam} formation: ${d.awayFormation}${via(fs, "awayFormation")}`);
   if (d.awayLineup?.length) lines.push(`- ${d.awayTeam} lineup: ${d.awayLineup.map((p) => p.name).join(", ")}${via(fs, "awayLineup")}`);
   if (d.homeManager || d.awayManager) {
-    lines.push(
-      `- Managers: ${d.homeTeam}: ${d.homeManager ? `${d.homeManager.name}${d.homeManager.country ? ` (${d.homeManager.country})` : ""}` : "unknown"} | ${d.awayTeam}: ${d.awayManager ? `${d.awayManager.name}${d.awayManager.country ? ` (${d.awayManager.country})` : ""}` : "unknown"} (via sofascore)`,
-    );
+    lines.push(`- Managers: ${d.homeTeam}: ${managerStr(d.homeManager)} | ${d.awayTeam}: ${managerStr(d.awayManager)} (via sofascore)`);
   }
   if (d.homeManagerVsAwayClub?.sampleSize) {
     const r = d.homeManagerVsAwayClub;
@@ -690,6 +1203,9 @@ function mergedProfileMarkdown(p: MergedProfile, lines: string[]) {
   lines.push(`- Injuries: ${p.injuries?.length ? p.injuries.map((m) => `${m.name} - ${m.injury}`).join("; ") : "none reported"}${via(fs, "injuries")}`);
   if (p.keyInjuries?.length) lines.push(`- Key injuries (by squad value): ${p.keyInjuries.map((m) => m.name).join(", ")}${via(fs, "keyInjuries")}`);
   if (p.missingMidfielders?.length) lines.push(`- Missing midfielders: ${p.missingMidfielders.join(", ")}`);
+  if (p.missingAttackers?.length) lines.push(`- Missing attackers: ${p.missingAttackers.join(", ")}`);
+  if (p.missingDefenders?.length) lines.push(`- Missing defenders: ${p.missingDefenders.join(", ")}`);
+  if (p.missingGoalkeepers?.length) lines.push(`- Missing goalkeepers: ${p.missingGoalkeepers.join(", ")}`);
   if (p.recentTransfers?.length) lines.push(`- Recent transfers: ${p.recentTransfers.map(transferStr).join("; ")}${via(fs, "recentTransfers")}`);
   const topScorers = computeTopPerformers(p.squad, "goals");
   const topAssists = computeTopPerformers(p.squad, "assists");
@@ -697,6 +1213,18 @@ function mergedProfileMarkdown(p: MergedProfile, lines: string[]) {
   if (topAssists.length) lines.push(`- Top assists: ${topAssists.map(performerStr).join(", ")}`);
   const topDefenders = computeTopDefenders(p.squad);
   if (topDefenders.length) lines.push(`- Top defenders (via squawka): ${topDefenders.map(defenderStr).join(", ")}`);
+  const benchRegulars = computeBenchRegulars(p.squad);
+  if (benchRegulars.length) lines.push(`- Bench regulars (last 20): ${benchRegulars.map(benchRegularStr).join(", ")}`);
+  const recentFormLeaders = computeRecentFormLeaders(p.squad);
+  if (recentFormLeaders.length) lines.push(`- Recent form (last 20): ${recentFormLeaders.map(recentFormLeaderStr).join(", ")}`);
+}
+
+function eloStr(e: ClubEloRating, label: string): string {
+  return `${label} Elo: ${e.elo} (world rank #${e.rank}, via clubelo.com, as of ${e.asOf})`;
+}
+
+function clubStrengthStr(s: ClubStrengthRating, label: string): string {
+  return `${label} strength: ${s.overall} overall (attack ${s.attack}, defense ${s.defense}, via statsultra.com)`;
 }
 
 function zoneStr(z: StandingsZoneInfo, label: string): string {
@@ -715,12 +1243,12 @@ function cardDisciplineVenueSplitStr(s: CardDisciplineVenueSplit, label: string)
 }
 
 function travelStr(t: TravelInfo, homeTeam: string, awayTeam: string): string {
-  const side = (traveling: boolean | null, team: string, country: string | null, km: number | null) => {
+  const side = (traveling: boolean | null, team: string, country: string | null, km: number | null, tzDiff: number | null, hours: number | null) => {
     if (traveling == null) return `${team}: unknown`;
     if (!traveling) return `${team} at home turf (${country})`;
-    return `${team} traveling (${country} -> ${t.venueCountry}${km != null ? `, ~${km.toLocaleString()}km` : ""})`;
+    return `${team} traveling (${country} -> ${t.venueCountry}${km != null ? `, ~${km.toLocaleString()}km` : ""}${hours != null ? `, ~${hours}h travel` : ""}${tzDiff != null && tzDiff > 0 ? `, ${tzDiff}h tz diff` : ""})`;
   };
-  return `Travel: ${side(t.homeTraveling, homeTeam, t.homeTeamCountry, t.homeTravelDistanceKm)}; ${side(t.awayTraveling, awayTeam, t.awayTeamCountry, t.awayTravelDistanceKm)}`;
+  return `Travel: ${side(t.homeTraveling, homeTeam, t.homeTeamCountry, t.homeTravelDistanceKm, t.homeTimezoneDiffHours, t.homeTravelTimeHours)}; ${side(t.awayTraveling, awayTeam, t.awayTeamCountry, t.awayTravelDistanceKm, t.awayTimezoneDiffHours, t.awayTravelTimeHours)}`;
 }
 
 function rankRecordStr(r: OpponentRankRecord, label: string): string {
@@ -731,8 +1259,20 @@ function presenceStr(p: PresenceEntry[], label: string): string {
   const present = p.filter((e) => e.status === "P");
   const absent = p.filter((e) => e.status === "A");
   const starting = present.filter((e) => e.starting).length;
+  const onBench = present.filter((e) => e.onBench).length;
+  const benchPart = present.some((e) => e.onBench != null) ? `, ${onBench} on bench` : "";
   const absentList = absent.length ? `: ${absent.map((e) => `${e.name} (${e.reason})`).join(", ")}` : "";
-  return `${label} availability: ${present.length} present (${starting} starting), ${absent.length} absent${absentList}`;
+  return `${label} availability: ${present.length} present (${starting} starting${benchPart}), ${absent.length} absent${absentList}`;
+}
+
+function benchInfoStr(b: BenchInfo, label: string): string {
+  const fmt = (v: number | null) => (v != null ? `€${(v / 1_000_000).toFixed(0)}m` : "n/a");
+  return `${label} bench: ${b.benchSize} named, ${fmt(b.benchTotalMarketValue)} combined value vs starting XI's ${fmt(b.startingTotalMarketValue)}`;
+}
+
+function squadStrengthStr(s: SquadStrengthInfo, label: string): string {
+  const fmt = (v: number | null) => (v != null ? `€${(v / 1_000_000).toFixed(0)}m` : "n/a");
+  return `${label} squad value: ${fmt(s.totalValue)} total (${fmt(s.availableValue)} available) -- attack ${fmt(s.attackValue)}, midfield ${fmt(s.midfieldValue)}, defense ${fmt(s.defenseValue)}, GK ${fmt(s.goalkeeperValue)}`;
 }
 
 const RESULT_WORD: Record<"W" | "D" | "L", string> = { W: "a win", D: "a draw", L: "a loss" };
@@ -795,6 +1335,39 @@ function aerialEstimateStr(x: SeasonAerialEstimate, label: string): string {
 
 function bigChancesEstimateStr(x: SeasonBigChancesEstimate, label: string): string {
   return `${label} big chances (last ${x.sampleSize} finished, ${x.source}): ${x.bigChancesCreatedFor} created (${x.bigChancesMissedFor} missed) / ${x.bigChancesCreatedAgainst} conceded (${x.bigChancesMissedAgainst} missed by opponent)`;
+}
+
+function advancedStatsStr(x: SeasonAdvancedStatsEstimate, label: string): string {
+  const parts = [
+    `touches in box ${x.touchesInBoxFor}-${x.touchesInBoxAgainst}`,
+    `shots in/out box ${x.shotsInsideBoxFor}/${x.shotsOutsideBoxFor}-${x.shotsInsideBoxAgainst}/${x.shotsOutsideBoxAgainst}`,
+    `shots off target ${x.shotsOffTargetFor}-${x.shotsOffTargetAgainst}`,
+    `blocked ${x.blockedShotsFor}-${x.blockedShotsAgainst}`,
+    `big chances scored ${x.bigChancesScoredFor}-${x.bigChancesScoredAgainst}`,
+    `crosses ${x.crossesFor}-${x.crossesAgainst}`,
+    `dribbles ${x.dribblesFor}-${x.dribblesAgainst}`,
+    `through balls ${x.throughBallsFor}-${x.throughBallsAgainst}`,
+    `final third entries ${x.finalThirdEntriesFor}-${x.finalThirdEntriesAgainst}`,
+    `offsides ${x.offsidesFor}-${x.offsidesAgainst}`,
+    `dispossessed ${x.dispossessedFor}-${x.dispossessedAgainst}`,
+    `tackles ${x.teamTacklesFor}-${x.teamTacklesAgainst}`,
+    `interceptions ${x.teamInterceptionsFor}-${x.teamInterceptionsAgainst}`,
+    `clearances ${x.teamClearancesFor}-${x.teamClearancesAgainst}`,
+    `free kicks ${x.freeKicksFor}-${x.freeKicksAgainst}`,
+    `xA ${x.xaFor}-${x.xaAgainst}`,
+    `corner goals ${x.cornerGoalsFor}-${x.cornerGoalsAgainst}`,
+    `penalty goals ${x.penaltyGoalsFor}-${x.penaltyGoalsAgainst}`,
+    `free-kick goals ${x.freeKickGoalsFor}-${x.freeKickGoalsAgainst}`,
+    `recoveries ${x.recoveriesFor}-${x.recoveriesAgainst}`,
+    `errors->shot ${x.errorsLeadToShotFor}-${x.errorsLeadToShotAgainst}`,
+    `errors->goal ${x.errorsLeadToGoalFor}-${x.errorsLeadToGoalAgainst}`,
+    `goals prevented ${x.goalsPreventedFor}-${x.goalsPreventedAgainst}`,
+    `big saves ${x.bigSavesFor}-${x.bigSavesAgainst}`,
+    `high claims ${x.highClaimsFor}-${x.highClaimsAgainst}`,
+    `distance ${x.distanceCoveredKmFor}km-${x.distanceCoveredKmAgainst}km`,
+    `sprints ${x.sprintsFor}-${x.sprintsAgainst}`,
+  ];
+  return `${label} advanced stats (last ${x.sampleSize} matched, ${x.source}): ${parts.join(", ")}`;
 }
 
 function passingStyleStr(x: SeasonPassingStyleEstimate, label: string): string {
@@ -869,6 +1442,7 @@ function restLabel(days: number | null): string {
 
 function printInsights(insights: MatchInsights, homeTeam: string, awayTeam: string) {
   console.log("  Insights (rule-based, see README for thresholds):");
+  if (insights.matchType) console.log(`    Match type: ${insights.matchType}`);
   if (insights.restComparison) {
     const r = insights.restComparison;
     console.log(
@@ -879,6 +1453,10 @@ function printInsights(insights: MatchInsights, homeTeam: string, awayTeam: stri
     const e = insights.experienceComparison;
     console.log(`    Experience: own avg age ${e.ownAverageAge ?? "n/a"} / opponent ${e.opponentAverageAge ?? "n/a"}${e.moreExperienced ? ` -- ${e.moreExperienced === "even" ? "even" : `${e.moreExperienced} squad older`}` : ""}`);
   }
+  if (insights.homeEloRating) console.log(`    ${eloStr(insights.homeEloRating, homeTeam)}`);
+  if (insights.awayEloRating) console.log(`    ${eloStr(insights.awayEloRating, awayTeam)}`);
+  if (insights.homeClubStrength) console.log(`    ${clubStrengthStr(insights.homeClubStrength, homeTeam)}`);
+  if (insights.awayClubStrength) console.log(`    ${clubStrengthStr(insights.awayClubStrength, awayTeam)}`);
   if (insights.homeStandingsZone) console.log(`    ${zoneStr(insights.homeStandingsZone, homeTeam)}`);
   if (insights.awayStandingsZone) console.log(`    ${zoneStr(insights.awayStandingsZone, awayTeam)}`);
   if (insights.homeCardDiscipline) console.log(`    ${cardStr(insights.homeCardDiscipline, homeTeam)}`);
@@ -891,6 +1469,8 @@ function printInsights(insights: MatchInsights, homeTeam: string, awayTeam: stri
   if (insights.awayShotsEstimate) console.log(`    ${shotsEstimateStr(insights.awayShotsEstimate, awayTeam)}`);
   if (insights.homeAerialEstimate) console.log(`    ${aerialEstimateStr(insights.homeAerialEstimate, homeTeam)}`);
   if (insights.awayAerialEstimate) console.log(`    ${aerialEstimateStr(insights.awayAerialEstimate, awayTeam)}`);
+  if (insights.homeAdvancedStats) console.log(`    ${advancedStatsStr(insights.homeAdvancedStats, homeTeam)}`);
+  if (insights.awayAdvancedStats) console.log(`    ${advancedStatsStr(insights.awayAdvancedStats, awayTeam)}`);
   if (insights.homeBigChancesEstimate) console.log(`    ${bigChancesEstimateStr(insights.homeBigChancesEstimate, homeTeam)}`);
   if (insights.awayBigChancesEstimate) console.log(`    ${bigChancesEstimateStr(insights.awayBigChancesEstimate, awayTeam)}`);
   if (insights.homePassingStyle) console.log(`    ${passingStyleStr(insights.homePassingStyle, homeTeam)}`);
@@ -910,6 +1490,10 @@ function printInsights(insights: MatchInsights, homeTeam: string, awayTeam: stri
   if (insights.awayRotation) console.log(`    ${rotationStr(insights.awayRotation, awayTeam)}`);
   if (insights.homePresence) console.log(`    ${presenceStr(insights.homePresence, homeTeam)}`);
   if (insights.awayPresence) console.log(`    ${presenceStr(insights.awayPresence, awayTeam)}`);
+  if (insights.homeBenchInfo) console.log(`    ${benchInfoStr(insights.homeBenchInfo, homeTeam)}`);
+  if (insights.awayBenchInfo) console.log(`    ${benchInfoStr(insights.awayBenchInfo, awayTeam)}`);
+  if (insights.homeSquadStrength) console.log(`    ${squadStrengthStr(insights.homeSquadStrength, homeTeam)}`);
+  if (insights.awaySquadStrength) console.log(`    ${squadStrengthStr(insights.awaySquadStrength, awayTeam)}`);
   if (insights.homeResilience) console.log(`    ${resilienceStr(insights.homeResilience, homeTeam)}`);
   if (insights.awayResilience) console.log(`    ${resilienceStr(insights.awayResilience, awayTeam)}`);
   if (insights.homeRestPerformance) console.log(`    ${restPerformanceStr(insights.homeRestPerformance, homeTeam)}`);
@@ -943,6 +1527,7 @@ function printInsights(insights: MatchInsights, homeTeam: string, awayTeam: stri
 
 function insightsMarkdown(insights: MatchInsights, homeTeam: string, awayTeam: string, lines: string[]) {
   lines.push("", "**Insights** _(rule-based, see README for thresholds)_", "");
+  if (insights.matchType) lines.push(`- Match type: ${insights.matchType}`);
   if (insights.restComparison) {
     const r = insights.restComparison;
     lines.push(
@@ -953,6 +1538,10 @@ function insightsMarkdown(insights: MatchInsights, homeTeam: string, awayTeam: s
     const e = insights.experienceComparison;
     lines.push(`- Experience: own avg age ${e.ownAverageAge ?? "n/a"} / opponent ${e.opponentAverageAge ?? "n/a"}${e.moreExperienced ? ` -- ${e.moreExperienced === "even" ? "even" : `${e.moreExperienced} squad older`}` : ""}`);
   }
+  if (insights.homeEloRating) lines.push(`- ${eloStr(insights.homeEloRating, homeTeam)}`);
+  if (insights.awayEloRating) lines.push(`- ${eloStr(insights.awayEloRating, awayTeam)}`);
+  if (insights.homeClubStrength) lines.push(`- ${clubStrengthStr(insights.homeClubStrength, homeTeam)}`);
+  if (insights.awayClubStrength) lines.push(`- ${clubStrengthStr(insights.awayClubStrength, awayTeam)}`);
   if (insights.homeStandingsZone) lines.push(`- ${zoneStr(insights.homeStandingsZone, homeTeam)}`);
   if (insights.awayStandingsZone) lines.push(`- ${zoneStr(insights.awayStandingsZone, awayTeam)}`);
   if (insights.homeCardDiscipline) lines.push(`- ${cardStr(insights.homeCardDiscipline, homeTeam)}`);
@@ -965,6 +1554,8 @@ function insightsMarkdown(insights: MatchInsights, homeTeam: string, awayTeam: s
   if (insights.awayShotsEstimate) lines.push(`- ${shotsEstimateStr(insights.awayShotsEstimate, awayTeam)}`);
   if (insights.homeAerialEstimate) lines.push(`- ${aerialEstimateStr(insights.homeAerialEstimate, homeTeam)}`);
   if (insights.awayAerialEstimate) lines.push(`- ${aerialEstimateStr(insights.awayAerialEstimate, awayTeam)}`);
+  if (insights.homeAdvancedStats) lines.push(`- ${advancedStatsStr(insights.homeAdvancedStats, homeTeam)}`);
+  if (insights.awayAdvancedStats) lines.push(`- ${advancedStatsStr(insights.awayAdvancedStats, awayTeam)}`);
   if (insights.homeBigChancesEstimate) lines.push(`- ${bigChancesEstimateStr(insights.homeBigChancesEstimate, homeTeam)}`);
   if (insights.awayBigChancesEstimate) lines.push(`- ${bigChancesEstimateStr(insights.awayBigChancesEstimate, awayTeam)}`);
   if (insights.homePassingStyle) lines.push(`- ${passingStyleStr(insights.homePassingStyle, homeTeam)}`);
@@ -984,6 +1575,10 @@ function insightsMarkdown(insights: MatchInsights, homeTeam: string, awayTeam: s
   if (insights.awayRotation) lines.push(`- ${rotationStr(insights.awayRotation, awayTeam)}`);
   if (insights.homePresence) lines.push(`- ${presenceStr(insights.homePresence, homeTeam)}`);
   if (insights.awayPresence) lines.push(`- ${presenceStr(insights.awayPresence, awayTeam)}`);
+  if (insights.homeBenchInfo) lines.push(`- ${benchInfoStr(insights.homeBenchInfo, homeTeam)}`);
+  if (insights.awayBenchInfo) lines.push(`- ${benchInfoStr(insights.awayBenchInfo, awayTeam)}`);
+  if (insights.homeSquadStrength) lines.push(`- ${squadStrengthStr(insights.homeSquadStrength, homeTeam)}`);
+  if (insights.awaySquadStrength) lines.push(`- ${squadStrengthStr(insights.awaySquadStrength, awayTeam)}`);
   if (insights.homeResilience) lines.push(`- ${resilienceStr(insights.homeResilience, homeTeam)}`);
   if (insights.awayResilience) lines.push(`- ${resilienceStr(insights.awayResilience, awayTeam)}`);
   if (insights.homeRestPerformance) lines.push(`- ${restPerformanceStr(insights.homeRestPerformance, homeTeam)}`);
@@ -1051,11 +1646,14 @@ function parseLeadingInt(s: string | undefined): number | null {
 // `home`/`away` strings (a placeholder/header row) and the second with the
 // actual total -- naively using .find() would silently grab the empty one,
 // so this explicitly skips empty values.
+// Window widened from 5 to 10 -- unlike the Sofascore-based enrichment,
+// Fotmob is a plain fetch() source (no browser, no Cloudflare pacing), so
+// doubling this sample doesn't carry the same runtime/reliability cost.
 async function computeSeasonMatchStatsEstimate(teamName: string, fotmobMatches: MatchInfo[]): Promise<SeasonMatchStatsEstimate> {
   const finished = fotmobMatches
     .filter((m) => m.status === "finished" && m.kickoffUtc)
     .sort((a, b) => new Date(b.kickoffUtc!).getTime() - new Date(a.kickoffUtc!).getTime())
-    .slice(0, 5);
+    .slice(0, 10);
   if (!finished.length) return { xg: null, shots: null, cardSplit: null, aerial: null, bigChances: null, passingStyle: null, fouls: null, goalkeeping: null };
 
   let xgFor = 0, xgAgainst = 0, goalsFor = 0, goalsAgainst = 0, xgSampleSize = 0;
@@ -1244,11 +1842,13 @@ interface PossessionAndCornersEstimate {
 // for the possession stat -- no extra requests. "Defensive error" isn't
 // published for every match (see SeasonDefensiveErrorsEstimate's doc
 // comment), unlike "Corner total" which is reliably present.
+// Same widened-to-10 reasoning as computeSeasonMatchStatsEstimate above --
+// Goal.com is also plain fetch(), no browser/pacing cost to double.
 async function computePossessionMatchup(teamName: string, goalMatches: MatchInfo[]): Promise<PossessionAndCornersEstimate> {
   const finished = goalMatches
     .filter((m) => m.status === "finished" && m.kickoffUtc)
     .sort((a, b) => new Date(b.kickoffUtc!).getTime() - new Date(a.kickoffUtc!).getTime())
-    .slice(0, 5);
+    .slice(0, 10);
   if (!finished.length) return { possession: null, corners: null, defensiveErrors: null };
 
   let highPts = 0, highCount = 0, otherPts = 0, otherCount = 0;
@@ -1427,6 +2027,14 @@ function classifyStandingsZone(
   return { position: standing.position, totalTeams: standing.totalTeams, zone, pointsFromBoundary, inTheMix: pointsFromBoundary != null ? pointsFromBoundary <= 6 : null };
 }
 
+// See MatchType's doc comment -- text classification, not a distinct field
+// any source publishes as a boolean.
+function classifyMatchType(competition: string | null): MatchType | null {
+  if (!competition) return null;
+  const c = competition.toLowerCase();
+  return c.includes("friendly") || c.includes("pre-season") || c.includes("preseason") ? "friendly" : "competitive";
+}
+
 function classifyCardDiscipline(stats: MatchDetails["homeTeamSeasonStats"], standing: TeamStanding | null): CardDisciplineInfo | null {
   const played = standing?.played;
   if (!stats || !played) return null;
@@ -1442,14 +2050,20 @@ function computeTravelInfo(merged: MergedMatch): TravelInfo | null {
   if (!merged.venueCountry || (!merged.homeTeamCountry && !merged.awayTeamCountry)) return null;
   const homeTraveling = merged.homeTeamCountry ? merged.homeTeamCountry !== merged.venueCountry : null;
   const awayTraveling = merged.awayTeamCountry ? merged.awayTeamCountry !== merged.venueCountry : null;
+  const homeTravelDistanceKm = homeTraveling && merged.homeTeamCountry ? countryDistanceKm(merged.homeTeamCountry, merged.venueCountry) : homeTraveling === false ? 0 : null;
+  const awayTravelDistanceKm = awayTraveling && merged.awayTeamCountry ? countryDistanceKm(merged.awayTeamCountry, merged.venueCountry) : awayTraveling === false ? 0 : null;
   return {
     venueCountry: merged.venueCountry,
     homeTeamCountry: merged.homeTeamCountry,
     awayTeamCountry: merged.awayTeamCountry,
     homeTraveling,
     awayTraveling,
-    homeTravelDistanceKm: homeTraveling && merged.homeTeamCountry ? countryDistanceKm(merged.homeTeamCountry, merged.venueCountry) : homeTraveling === false ? 0 : null,
-    awayTravelDistanceKm: awayTraveling && merged.awayTeamCountry ? countryDistanceKm(merged.awayTeamCountry, merged.venueCountry) : awayTraveling === false ? 0 : null,
+    homeTravelDistanceKm,
+    awayTravelDistanceKm,
+    homeTimezoneDiffHours: merged.homeTeamCountry ? countryTimezoneDiffHours(merged.homeTeamCountry, merged.venueCountry) : null,
+    awayTimezoneDiffHours: merged.awayTeamCountry ? countryTimezoneDiffHours(merged.awayTeamCountry, merged.venueCountry) : null,
+    homeTravelTimeHours: homeTravelDistanceKm != null ? travelTimeHours(homeTravelDistanceKm) : null,
+    awayTravelTimeHours: awayTravelDistanceKm != null ? travelTimeHours(awayTravelDistanceKm) : null,
   };
 }
 
@@ -1480,6 +2094,95 @@ function computeOpponentRankRecord(
   return sampleSize ? { sampleSize, wins, draws, losses } : null;
 }
 
+// Sofascore's h2h endpoint only returns an aggregate tally (teamDuel/
+// managerDuel), confirmed live -- no per-meeting match list exists there.
+// This finds actual past meetings the honest way: scanning the already-
+// fetched recent-form sample (last20Overall, one side's perspective) for
+// results against this specific opponent, then cross-referencing the raw
+// fixture list (which has each match's sourceUrl/id) to fetch full details
+// for just those matches. Capped at 3 -- most repeat opponents (same league/
+// group stage) show up 0-3 times in a 20-match window anyway, and each hit
+// costs one extra details() fetch.
+async function computeRecentMeetings(
+  rawMatches: MatchInfo[],
+  formResults: FormResult[],
+  opponentName: string,
+  source: Source,
+): Promise<HeadToHeadMeeting[] | null> {
+  const target = normalizeTeamName(opponentName);
+  const meetings = formResults.filter((r) => {
+    const opp = normalizeTeamName(r.opponent);
+    return opp === target || opp.includes(target) || target.includes(opp);
+  });
+  if (!meetings.length) return null;
+
+  const out: HeadToHeadMeeting[] = [];
+  for (const meeting of meetings.slice(0, 3)) {
+    const raw = rawMatches.find((m) => m.kickoffUtc === meeting.date && (normalizeTeamName(m.homeTeam) === target || normalizeTeamName(m.awayTeam) === target));
+    if (!raw) continue;
+    try {
+      const details = await scrapers[source].details(raw);
+      const xgStat = details.matchStats?.find((s) => s.name.toLowerCase().includes("expected goals"));
+      out.push({
+        date: meeting.date,
+        competition: meeting.competition,
+        scoreline: meeting.scoreline,
+        venue: meeting.venue,
+        homeFormation: details.homeFormation,
+        awayFormation: details.awayFormation,
+        homeXg: xgStat ? Number(xgStat.home) || null : null,
+        awayXg: xgStat ? Number(xgStat.away) || null : null,
+        homeLineup: details.homeLineup,
+        awayLineup: details.awayLineup,
+      });
+    } catch {
+      // best-effort -- a failed detail fetch for one past meeting just
+      // means one fewer entry, not a reason to fail the whole computation
+    }
+  }
+  return out.length ? out : null;
+}
+
+function applyUsagePattern(squad: SquadMember[] | null, usageByPlayer: Map<string, PlayerUsagePattern>): SquadMember[] | null {
+  if (!squad || !usageByPlayer.size) return squad;
+  return squad.map((m) => {
+    const usage = usageByPlayer.get(normalizeTeamName(m.name));
+    return usage ? { ...m, recentUsage: usage } : m;
+  });
+}
+
+function computeSquadStrength(squad: SquadMember[] | null, injuries: SquadMember[] | null, suspended: string[] | null): SquadStrengthInfo | null {
+  if (!squad?.length) return null;
+  const sum = (members: SquadMember[]) => {
+    const values = members.map((m) => m.marketValue).filter((v): v is number => v != null);
+    return values.length ? values.reduce((a, b) => a + b, 0) : null;
+  };
+  const unavailable = new Set([...(injuries ?? []).map((m) => normalizeTeamName(m.name)), ...(suspended ?? []).map(normalizeTeamName)]);
+  const available = squad.filter((m) => !unavailable.has(normalizeTeamName(m.name)));
+  return {
+    totalValue: sum(squad),
+    attackValue: sum(squad.filter((m) => isAttackerRole(m.role))),
+    midfieldValue: sum(squad.filter((m) => isMidfieldRole(m.role))),
+    defenseValue: sum(squad.filter((m) => isDefenderRole(m.role))),
+    goalkeeperValue: sum(squad.filter((m) => isGoalkeeperRole(m.role))),
+    availableValue: sum(available),
+  };
+}
+
+function computeBenchInfo(bench: LineupPlayer[] | null, lineup: LineupPlayer[] | null, squad: SquadMember[] | null): BenchInfo | null {
+  if (!bench?.length || !squad?.length) return null;
+  const valueByName = new Map(squad.map((m) => [normalizeTeamName(m.name), m.marketValue]));
+  const sum = (players: LineupPlayer[]) => {
+    const values = players.map((p) => valueByName.get(normalizeTeamName(p.name))).filter((v): v is number => v != null);
+    return values.length ? values.reduce((a, b) => a + b, 0) : null;
+  };
+  return {
+    benchSize: bench.length,
+    benchTotalMarketValue: sum(bench),
+    startingTotalMarketValue: lineup?.length ? sum(lineup) : null,
+  };
+}
+
 // Present = not on the injuries or suspensions list; Absent = either one.
 // "starting" comes from this match's own lineup where published. Doesn't
 // distinguish "available but not selected" from "on the bench" -- none of
@@ -1488,17 +2191,19 @@ function computeOpponentRankRecord(
 function computePresence(
   squad: SquadMember[] | null,
   lineup: LineupPlayer[] | null,
+  bench: LineupPlayer[] | null,
   injuries: SquadMember[] | null,
   suspended: string[] | null,
 ): PresenceEntry[] | null {
   if (!squad?.length) return null;
   const lineupNames = new Set((lineup ?? []).map((p) => normalizeTeamName(p.name)));
+  const benchNames = bench ? new Set(bench.map((p) => normalizeTeamName(p.name))) : null;
   const injuryByName = new Map((injuries ?? []).map((p) => [normalizeTeamName(p.name), p.injury]));
   const suspendedNames = new Set((suspended ?? []).map(normalizeTeamName));
   return squad.map((m) => {
     const norm = normalizeTeamName(m.name);
     const reason = injuryByName.get(norm) ?? (suspendedNames.has(norm) ? "Suspended" : null);
-    return { name: m.name, status: reason ? "A" : "P", starting: lineupNames.has(norm), reason };
+    return { name: m.name, status: reason ? "A" : "P", starting: lineupNames.has(norm), onBench: benchNames ? benchNames.has(norm) : null, reason };
   });
 }
 
@@ -1841,6 +2546,7 @@ function computeInsights(
   }
 
   return {
+    matchType: classifyMatchType(merged.competition),
     restComparison,
     experienceComparison,
     homeStandingsZone: classifyStandingsZone(merged.homeTeamStanding, merged.competition, merged.standingsTable),
@@ -1905,6 +2611,19 @@ function computeInsights(
     awayFullbackExposure: null,
     homeStandingsImpact: computeStandingsImpact(merged.homeTeamStanding, merged.awayTeamStanding, merged.standingsTable),
     awayStandingsImpact: computeStandingsImpact(merged.awayTeamStanding, merged.homeTeamStanding, merged.standingsTable),
+    // Filled in by runSearch after this returns -- needs the venue-
+    // classification enrichment loop, which needs the merged team profiles
+    // this call site doesn't have.
+    homeAdvancedStats: null,
+    awayAdvancedStats: null,
+    homeBenchInfo: null,
+    awayBenchInfo: null,
+    homeEloRating: null,
+    awayEloRating: null,
+    homeSquadStrength: null,
+    awaySquadStrength: null,
+    homeClubStrength: null,
+    awayClubStrength: null,
     opponentContextError: opponent.error,
   };
 }
@@ -2053,7 +2772,7 @@ export async function runSearch(teamName: string, onProgress: (msg: string) => v
 
   const merged = detailsBySource.size > 0 ? mergeMatchDetails(detailsBySource) : null;
   const formSource = SOURCE_ORDER.find((s) => matchesBySource.get(s)?.length);
-  const form = formSource ? computeFormSummary(teamName, matchesBySource.get(formSource)!) : null;
+  let form = formSource ? computeFormSummary(teamName, matchesBySource.get(formSource)!) : null;
   const mergedProfile = profileBySource.size > 0 ? mergeTeamProfile(profileBySource) : null;
 
   let insights: MatchInsights | null = null;
@@ -2066,12 +2785,50 @@ export async function runSearch(teamName: string, onProgress: (msg: string) => v
     opponentName = ownIsHome === false ? merged.homeTeam : merged.awayTeam;
     const ownRestDays = form?.next5WithGaps[0]?.daysSincePrevious ?? null;
 
+    if (formSource && form) {
+      merged.recentMeetings = await computeRecentMeetings(matchesBySource.get(formSource)!, form.last20Overall, opponentName, formSource).catch(() => null);
+    }
+
+    let ownAdvancedStats: SeasonAdvancedStatsEstimate | null = null;
+    if (formSource && form) {
+      const enrichedOwn = await enrichFormWithVenueClassification(matchesBySource.get(formSource)!, form, teamName, formSource).catch(() => ({ form: form!, advancedStats: null, usageByPlayer: new Map<string, PlayerUsagePattern>() }));
+      form = enrichedOwn.form;
+      ownAdvancedStats = enrichedOwn.advancedStats;
+      if (mergedProfile) mergedProfile.squad = applyUsagePattern(mergedProfile.squad, enrichedOwn.usageByPlayer);
+    }
+
     onProgress(`Next match found: ${merged.homeTeam} vs ${merged.awayTeam}. Fetching opponent (${opponentName}) and computing insights...`);
     const opponentContext = await fetchOpponentContext(merged.baseSource, opponentName);
     opponentProfile = opponentContext.mergedProfile;
 
     insights = computeInsights(merged, mergedProfile?.averageAge ?? null, ownRestDays, opponentContext);
     venueDetails = await fetchVenueDetails(merged, merged.venueCountry);
+
+    const eloRatings = await getClubEloRatings(merged.homeTeam, merged.awayTeam).catch(() => ({ home: null, away: null }));
+    insights.homeEloRating = eloRatings.home;
+    insights.awayEloRating = eloRatings.away;
+
+    const strengthRatings = await getClubStrengthRatings(merged.homeTeam, merged.awayTeam).catch(() => ({ home: null, away: null }));
+    insights.homeClubStrength = strengthRatings.home;
+    insights.awayClubStrength = strengthRatings.away;
+
+    if (merged.homeManager) {
+      const appointedDate = await getManagerAppointmentDate(merged.homeManager.name).catch(() => null);
+      const previousManager = await getPreviousManager(merged.homeTeam).catch(() => null);
+      merged.homeManager = { ...merged.homeManager, appointedDate, previousManager, recentAppointment: isRecentAppointment(appointedDate) };
+    }
+    if (merged.awayManager) {
+      const appointedDate = await getManagerAppointmentDate(merged.awayManager.name).catch(() => null);
+      const previousManager = await getPreviousManager(merged.awayTeam).catch(() => null);
+      merged.awayManager = { ...merged.awayManager, appointedDate, previousManager, recentAppointment: isRecentAppointment(appointedDate) };
+    }
+
+    if (merged.refereeStats) {
+      const penaltiesAwarded = await getRefereePenaltyCount(merged.competition, merged.referee).catch(() => null);
+      const homeAwayBias = await getRefereeHomeAwayBias(merged.competition, merged.referee).catch(() => null);
+      const foulsPerGame = await getRefereeFoulsPerGame(merged.referee).catch(() => null);
+      merged.refereeStats = { ...merged.refereeStats, penaltiesAwarded, homeAwayBias, foulsPerGame };
+    }
 
     // Both teams get the full-depth xG/possession-matchup/losing-streak
     // treatment, not just the searched team -- costs 2 extra fixture-list
@@ -2124,8 +2881,14 @@ export async function runSearch(teamName: string, onProgress: (msg: string) => v
     const ownPosition = (ownIsHome ? merged.homeTeamStanding : merged.awayTeamStanding)?.position ?? null;
     const opponentPosition = (ownIsHome ? merged.awayTeamStanding : merged.homeTeamStanding)?.position ?? null;
     opponentForm = computeFormSummary(opponentName, opponentContext.matches);
-    const ownRankRecord = computeOpponentRankRecord(form?.last10Overall ?? [], merged.competition, merged.standingsTable, ownPosition);
-    const opponentRankRecord = computeOpponentRankRecord(opponentForm.last10Overall, merged.competition, merged.standingsTable, opponentPosition);
+    const enrichedOpponent = await enrichFormWithVenueClassification(opponentContext.matches, opponentForm, opponentName, merged.baseSource).catch(() => ({ form: opponentForm!, advancedStats: null, usageByPlayer: new Map<string, PlayerUsagePattern>() }));
+    opponentForm = enrichedOpponent.form;
+    const opponentAdvancedStats = enrichedOpponent.advancedStats;
+    if (opponentProfile) opponentProfile.squad = applyUsagePattern(opponentProfile.squad, enrichedOpponent.usageByPlayer);
+    insights.homeAdvancedStats = ownIsHome ? ownAdvancedStats : opponentAdvancedStats;
+    insights.awayAdvancedStats = ownIsHome ? opponentAdvancedStats : ownAdvancedStats;
+    const ownRankRecord = computeOpponentRankRecord(form?.last20Overall ?? [], merged.competition, merged.standingsTable, ownPosition);
+    const opponentRankRecord = computeOpponentRankRecord(opponentForm.last20Overall, merged.competition, merged.standingsTable, opponentPosition);
 
     // Candidate names are each team's OWN recent competitions, not the
     // upcoming match's specific competition -- that's often a friendly or
@@ -2147,15 +2910,25 @@ export async function runSearch(teamName: string, onProgress: (msg: string) => v
     const ownPresence = computePresence(
       mergedProfile?.squad ?? null,
       ownIsHome ? merged.homeLineup : merged.awayLineup,
+      ownIsHome ? merged.homeBench : merged.awayBench,
       mergedProfile?.injuries ?? null,
       ownIsHome ? merged.homeSuspendedPlayers : merged.awaySuspendedPlayers,
     );
     const opponentPresence = computePresence(
       opponentProfile?.squad ?? null,
       ownIsHome ? merged.awayLineup : merged.homeLineup,
+      ownIsHome ? merged.awayBench : merged.homeBench,
       opponentProfile?.injuries ?? null,
       ownIsHome ? merged.awaySuspendedPlayers : merged.homeSuspendedPlayers,
     );
+
+    insights.homeBenchInfo = computeBenchInfo(merged.homeBench, merged.homeLineup, ownIsHome ? mergedProfile?.squad ?? null : opponentProfile?.squad ?? null);
+    insights.awayBenchInfo = computeBenchInfo(merged.awayBench, merged.awayLineup, ownIsHome ? opponentProfile?.squad ?? null : mergedProfile?.squad ?? null);
+
+    const ownSquadStrength = computeSquadStrength(mergedProfile?.squad ?? null, mergedProfile?.injuries ?? null, ownIsHome ? merged.homeSuspendedPlayers : merged.awaySuspendedPlayers);
+    const opponentSquadStrength = computeSquadStrength(opponentProfile?.squad ?? null, opponentProfile?.injuries ?? null, ownIsHome ? merged.awaySuspendedPlayers : merged.homeSuspendedPlayers);
+    insights.homeSquadStrength = ownIsHome ? ownSquadStrength : opponentSquadStrength;
+    insights.awaySquadStrength = ownIsHome ? opponentSquadStrength : ownSquadStrength;
 
     const ownRotation = await computeRotationInfo(teamName, merged.baseSource, matchesBySource.get(formSource!) ?? []);
     const opponentRotation = await computeRotationInfo(opponentName, merged.baseSource, opponentContext.matches);
@@ -2167,8 +2940,8 @@ export async function runSearch(teamName: string, onProgress: (msg: string) => v
     insights.homeRotation = ownIsHome ? ownRotation : opponentRotation;
     insights.awayRotation = ownIsHome ? opponentRotation : ownRotation;
 
-    const ownResilience = computeResilience(form?.last10Overall ?? []);
-    const opponentResilience = computeResilience(opponentForm.last10Overall);
+    const ownResilience = computeResilience(form?.last20Overall ?? []);
+    const opponentResilience = computeResilience(opponentForm.last20Overall);
     insights.homeResilience = ownIsHome ? ownResilience : opponentResilience;
     insights.awayResilience = ownIsHome ? opponentResilience : ownResilience;
 
@@ -2207,11 +2980,15 @@ export async function runSearch(teamName: string, onProgress: (msg: string) => v
     insights.refereeCardRiskNote = computeRefereeCardRiskNote(merged.referee, merged.refereeStats, insights.homeCardRisks, insights.awayCardRisks);
 
     const weatherQueryCity = merged.venueCity ?? merged.venueName;
-    if (!merged.weather && weatherQueryCity) {
-      const weather = await getWttrWeather(weatherQueryCity, merged.kickoffUtc).catch(() => null);
-      if (weather) {
-        merged.weather = weather;
-        merged.fieldSources.weather = "wttr.in";
+    if (weatherQueryCity) {
+      const weatherDetail = await getWttrWeatherDetail(weatherQueryCity, merged.kickoffUtc).catch(() => null);
+      if (weatherDetail) {
+        merged.weatherDetail = { tempC: weatherDetail.tempC, humidityPct: weatherDetail.humidityPct, windSpeedKmph: weatherDetail.windSpeedKmph, precipMM: weatherDetail.precipMM };
+        merged.fieldSources.weatherDetail = "wttr.in";
+        if (!merged.weather && weatherDetail.description) {
+          merged.weather = `${weatherDetail.description}, ${weatherDetail.tempC}°C (same-day approximation, local midday)`;
+          merged.fieldSources.weather = "wttr.in";
+        }
       }
     }
   }

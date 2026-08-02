@@ -30,7 +30,7 @@ async function fetchJson(url: string): Promise<any> {
  * forecast, so this reports the day's midday (12:00 local) conditions as a
  * same-day approximation rather than an exact kickoff-hour forecast.
  */
-export async function getWttrWeather(city: string, kickoffUtc: string | null): Promise<string | null> {
+async function fetchMidday(city: string, kickoffUtc: string | null): Promise<any | null> {
   if (!kickoffUtc) return null;
   const kickoffDate = new Date(kickoffUtc);
   const daysOut = Math.floor((kickoffDate.getTime() - Date.now()) / 86400000);
@@ -41,9 +41,34 @@ export async function getWttrWeather(city: string, kickoffUtc: string | null): P
   const day = data?.weather?.find((w: any) => w.date === targetDate);
   if (!day) return null;
 
-  const midday = day.hourly?.find((h: any) => h.time === "1200") ?? day.hourly?.[Math.floor((day.hourly?.length ?? 1) / 2)];
-  if (!midday) return null;
+  return day.hourly?.find((h: any) => h.time === "1200") ?? day.hourly?.[Math.floor((day.hourly?.length ?? 1) / 2)] ?? null;
+}
 
-  const desc = midday.weatherDesc?.[0]?.value;
-  return desc ? `${desc}, ${midday.tempC}°C (same-day approximation, local midday)` : null;
+export interface WttrWeatherDetail {
+  description: string | null;
+  tempC: number | null;
+  humidityPct: number | null;
+  windSpeedKmph: number | null;
+  precipMM: number | null;
+}
+
+// Single fetch, both the existing display string and the structured detail
+// fields (humidity/wind/precip -- present in the same j1 payload, just not
+// previously surfaced) derive from it.
+export async function getWttrWeatherDetail(city: string, kickoffUtc: string | null): Promise<WttrWeatherDetail | null> {
+  const midday = await fetchMidday(city, kickoffUtc);
+  if (!midday) return null;
+  return {
+    description: midday.weatherDesc?.[0]?.value ?? null,
+    tempC: midday.tempC != null ? Number(midday.tempC) : null,
+    humidityPct: midday.humidity != null ? Number(midday.humidity) : null,
+    windSpeedKmph: midday.windspeedKmph != null ? Number(midday.windspeedKmph) : null,
+    precipMM: midday.precipMM != null ? Number(midday.precipMM) : null,
+  };
+}
+
+export async function getWttrWeather(city: string, kickoffUtc: string | null): Promise<string | null> {
+  const detail = await getWttrWeatherDetail(city, kickoffUtc);
+  if (!detail?.description) return null;
+  return `${detail.description}, ${detail.tempC}°C (same-day approximation, local midday)`;
 }

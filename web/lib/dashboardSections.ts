@@ -33,16 +33,50 @@ export function buildSections(report: ReportJson): Section[] {
 
   // --- Match snapshot ---
   const snapshot: Row[] = [];
+  if (match.season || match.round != null) snapshot.push({ kind: "text", label: "Season / round", value: `${match.season ?? "n/a"}${match.round != null ? `, round ${match.round}` : ""}` });
+  if (insights?.matchType) snapshot.push({ kind: "text", label: "Match type", value: insights.matchType });
   if (match.venueName) snapshot.push({ kind: "text", label: "Venue", value: `${match.venueName}${match.venueCity ? `, ${match.venueCity}` : ""}${match.venueCountry ? `, ${match.venueCountry}` : ""}` });
   if (match.weather) snapshot.push({ kind: "text", label: "Weather", value: match.weather });
-  if (match.referee) snapshot.push({ kind: "text", label: "Referee", value: match.refereeStats ? `${match.referee} (${match.refereeStats.yellowCardsPerGame} yellow/game, ${match.refereeStats.games} games)` : match.referee });
+  if (match.weatherDetail) {
+    const w = match.weatherDetail;
+    snapshot.push({ kind: "text", label: "Weather detail", value: `humidity ${w.humidityPct ?? "n/a"}%, wind ${w.windSpeedKmph ?? "n/a"} km/h, precip ${w.precipMM ?? "n/a"} mm` });
+  }
+  if (match.referee) {
+    const penalties = match.refereeStats?.penaltiesAwarded != null ? `, ${match.refereeStats.penaltiesAwarded} penalties this season` : "";
+    const fouls = match.refereeStats?.foulsPerGame != null ? `, ${match.refereeStats.foulsPerGame} fouls/game` : "";
+    snapshot.push({ kind: "text", label: "Referee", value: match.refereeStats ? `${match.referee} (${match.refereeStats.yellowCardsPerGame} yellow/game, ${match.refereeStats.games} games${penalties}${fouls})` : match.referee });
+  }
+  if (match.refereeStats?.homeAwayBias) {
+    const b = match.refereeStats.homeAwayBias;
+    snapshot.push({ kind: "text", label: "Referee home/away bias", value: `home ${b.homeCardsPerGame} vs away ${b.awayCardsPerGame} cards/game (n=${b.sampleSize})`, tone: b.awayCardsPerGame > b.homeCardsPerGame ? "warn" : undefined });
+  }
   if (match.attendance) snapshot.push({ kind: "text", label: "Attendance", value: match.attendance.toLocaleString() });
   if (match.headToHeadSummary) {
     const h = match.headToHeadSummary;
     snapshot.push({ kind: "text", label: "Head-to-head", value: `${homeTeam} ${h.homeWins}W - ${h.draws}D - ${h.awayWins}W ${awayTeam}` });
   }
   if (match.headToHeadStreaks?.length) snapshot.push({ kind: "text", label: "H2H streaks", value: match.headToHeadStreaks.join("; ") });
+  if (match.recentMeetings?.length) {
+    snapshot.push({
+      kind: "text",
+      label: "Recent meetings",
+      value: match.recentMeetings
+        .map((m) => `${m.date?.slice(0, 10) ?? "?"} ${m.scoreline}${m.homeFormation && m.awayFormation ? ` (${m.homeFormation} v ${m.awayFormation})` : ""}${m.homeXg != null && m.awayXg != null ? `, xG ${m.homeXg}-${m.awayXg}` : ""}`)
+        .join(" | "),
+    });
+  }
   if (match.homeFormation || match.awayFormation) snapshot.push({ kind: "text", label: "Formations", value: `${match.homeFormation ?? "?"} vs ${match.awayFormation ?? "?"}` });
+  const managerStr = (m: typeof match.homeManager) => {
+    if (!m) return "unknown";
+    const tenure = m.appointedDate ? `, appointed ${m.appointedDate.slice(0, 10)}` : "";
+    const recent = m.recentAppointment ? " (recent change)" : "";
+    const previous = m.previousManager ? `, previously ${m.previousManager}` : "";
+    return `${m.name}${m.country ? ` (${m.country})` : ""}${tenure}${recent}${previous}`;
+  };
+  if (match.homeManager || match.awayManager) {
+    snapshot.push({ kind: "text", label: `${homeTeam} manager`, value: managerStr(match.homeManager) });
+    snapshot.push({ kind: "text", label: `${awayTeam} manager`, value: managerStr(match.awayManager) });
+  }
   if (match.homeTeamStanding) snapshot.push({ kind: "text", label: `${homeTeam} standing`, value: `#${match.homeTeamStanding.position} (${match.homeTeamStanding.points}pts, ${match.homeTeamStanding.wins}W-${match.homeTeamStanding.draws}D-${match.homeTeamStanding.losses}L, ${match.homeTeamStanding.goalDiff})` });
   if (match.awayTeamStanding) snapshot.push({ kind: "text", label: `${awayTeam} standing`, value: `#${match.awayTeamStanding.position} (${match.awayTeamStanding.points}pts, ${match.awayTeamStanding.wins}W-${match.awayTeamStanding.draws}D-${match.awayTeamStanding.losses}L, ${match.awayTeamStanding.goalDiff})` });
   if (match.homeTeamSeasonStats) snapshot.push({ kind: "text", label: `${homeTeam} season`, value: `${match.homeTeamSeasonStats.goalsScored} scored, ${match.homeTeamSeasonStats.goalsConceded} conceded, ${match.homeTeamSeasonStats.cleanSheets} clean sheets` });
@@ -64,15 +98,34 @@ export function buildSections(report: ReportJson): Section[] {
       perf.push({ kind: "bar", label: "Season xG against", home: insights.homeXgEstimate.xgAgainst, away: insights.awayXgEstimate.xgAgainst, homeLabel: homeTeam, awayLabel: awayTeam });
     }
     if (insights.homeShotsEstimate && insights.awayShotsEstimate) {
-      perf.push({ kind: "bar", label: "Shots (last 5)", home: insights.homeShotsEstimate.shotsFor, away: insights.awayShotsEstimate.shotsFor, homeLabel: homeTeam, awayLabel: awayTeam });
-      perf.push({ kind: "bar", label: "Shots on target (last 5)", home: insights.homeShotsEstimate.shotsOnTargetFor, away: insights.awayShotsEstimate.shotsOnTargetFor, homeLabel: homeTeam, awayLabel: awayTeam });
+      perf.push({ kind: "bar", label: "Shots (last 10)", home: insights.homeShotsEstimate.shotsFor, away: insights.awayShotsEstimate.shotsFor, homeLabel: homeTeam, awayLabel: awayTeam });
+      perf.push({ kind: "bar", label: "Shots on target (last 10)", home: insights.homeShotsEstimate.shotsOnTargetFor, away: insights.awayShotsEstimate.shotsOnTargetFor, homeLabel: homeTeam, awayLabel: awayTeam });
+    }
+    if (insights.homeAdvancedStats && insights.awayAdvancedStats) {
+      const h = insights.homeAdvancedStats, a = insights.awayAdvancedStats;
+      perf.push({ kind: "bar", label: "Touches in box (matched sample)", home: h.touchesInBoxFor, away: a.touchesInBoxFor, homeLabel: homeTeam, awayLabel: awayTeam });
+      perf.push({ kind: "bar", label: "Shots inside box (matched sample)", home: h.shotsInsideBoxFor, away: a.shotsInsideBoxFor, homeLabel: homeTeam, awayLabel: awayTeam });
+      perf.push({ kind: "bar", label: "Blocked shots (matched sample)", home: h.blockedShotsFor, away: a.blockedShotsFor, homeLabel: homeTeam, awayLabel: awayTeam });
+      perf.push({ kind: "bar", label: "Crosses (matched sample)", home: h.crossesFor, away: a.crossesFor, homeLabel: homeTeam, awayLabel: awayTeam });
+      perf.push({ kind: "bar", label: "Dribbles (matched sample)", home: h.dribblesFor, away: a.dribblesFor, homeLabel: homeTeam, awayLabel: awayTeam });
+      perf.push({ kind: "bar", label: "Tackles (matched sample)", home: h.teamTacklesFor, away: a.teamTacklesFor, homeLabel: homeTeam, awayLabel: awayTeam });
+      perf.push({ kind: "bar", label: "Interceptions (matched sample)", home: h.teamInterceptionsFor, away: a.teamInterceptionsFor, homeLabel: homeTeam, awayLabel: awayTeam });
+      perf.push({ kind: "bar", label: "Clearances (matched sample)", home: h.teamClearancesFor, away: a.teamClearancesFor, homeLabel: homeTeam, awayLabel: awayTeam });
+      perf.push({ kind: "bar", label: "xA (matched sample)", home: h.xaFor, away: a.xaFor, homeLabel: homeTeam, awayLabel: awayTeam });
+      perf.push({ kind: "text", label: `${homeTeam} set-piece goals (corner/pen/FK)`, value: `${h.cornerGoalsFor}/${h.penaltyGoalsFor}/${h.freeKickGoalsFor}` });
+      perf.push({ kind: "text", label: `${awayTeam} set-piece goals (corner/pen/FK)`, value: `${a.cornerGoalsFor}/${a.penaltyGoalsFor}/${a.freeKickGoalsFor}` });
+      perf.push({ kind: "bar", label: "Distance covered km (matched sample)", home: h.distanceCoveredKmFor, away: a.distanceCoveredKmFor, homeLabel: homeTeam, awayLabel: awayTeam });
+      perf.push({ kind: "text", label: `${homeTeam} errors -> shot/goal`, value: `${h.errorsLeadToShotFor} / ${h.errorsLeadToGoalFor}`, tone: h.errorsLeadToGoalFor > 0 ? "bad" : undefined });
+      perf.push({ kind: "text", label: `${awayTeam} errors -> shot/goal`, value: `${a.errorsLeadToShotFor} / ${a.errorsLeadToGoalFor}`, tone: a.errorsLeadToGoalFor > 0 ? "bad" : undefined });
+      perf.push({ kind: "text", label: `${homeTeam} offsides / dispossessed`, value: `${h.offsidesFor} / ${h.dispossessedFor}` });
+      perf.push({ kind: "text", label: `${awayTeam} offsides / dispossessed`, value: `${a.offsidesFor} / ${a.dispossessedFor}` });
     }
     if (insights.homeBigChancesEstimate && insights.awayBigChancesEstimate) {
       perf.push({ kind: "bar", label: "Big chances created", home: insights.homeBigChancesEstimate.bigChancesCreatedFor, away: insights.awayBigChancesEstimate.bigChancesCreatedFor, homeLabel: homeTeam, awayLabel: awayTeam });
       perf.push({ kind: "bar", label: "Big chances missed", home: insights.homeBigChancesEstimate.bigChancesMissedFor, away: insights.awayBigChancesEstimate.bigChancesMissedFor, homeLabel: homeTeam, awayLabel: awayTeam });
     }
     if (insights.homeCornersEstimate && insights.awayCornersEstimate) {
-      perf.push({ kind: "bar", label: "Corners (last 5)", home: insights.homeCornersEstimate.cornersFor, away: insights.awayCornersEstimate.cornersFor, homeLabel: homeTeam, awayLabel: awayTeam });
+      perf.push({ kind: "bar", label: "Corners (last 10)", home: insights.homeCornersEstimate.cornersFor, away: insights.awayCornersEstimate.cornersFor, homeLabel: homeTeam, awayLabel: awayTeam });
     }
     if (insights.homePossessionMatchup) {
       const p = insights.homePossessionMatchup;
@@ -97,7 +150,7 @@ export function buildSections(report: ReportJson): Section[] {
       discipline.push({ kind: "text", label: `${awayTeam} cards by venue`, value: `at home ${s.atHomeYellowPerGame ?? "n/a"}Y (n=${s.atHomeSampleSize}) / away ${s.awayYellowPerGame ?? "n/a"}Y (n=${s.awaySampleSize})` });
     }
     if (insights.homeFoulsEstimate && insights.awayFoulsEstimate) {
-      discipline.push({ kind: "bar", label: "Fouls committed (last 5)", home: insights.homeFoulsEstimate.foulsCommittedFor, away: insights.awayFoulsEstimate.foulsCommittedFor, homeLabel: homeTeam, awayLabel: awayTeam });
+      discipline.push({ kind: "bar", label: "Fouls committed (last 10)", home: insights.homeFoulsEstimate.foulsCommittedFor, away: insights.awayFoulsEstimate.foulsCommittedFor, homeLabel: homeTeam, awayLabel: awayTeam });
     }
     if (insights.homeCardRisks?.length) discipline.push({ kind: "text", label: `${homeTeam} card risk`, value: insights.homeCardRisks.map((r) => `${r.name} (${r.yellowCards}Y${r.redCards ? `/${r.redCards}R` : ""})`).join(", "), tone: "warn" });
     if (insights.awayCardRisks?.length) discipline.push({ kind: "text", label: `${awayTeam} card risk`, value: insights.awayCardRisks.map((r) => `${r.name} (${r.yellowCards}Y${r.redCards ? `/${r.redCards}R` : ""})`).join(", "), tone: "warn" });
@@ -112,7 +165,7 @@ export function buildSections(report: ReportJson): Section[] {
     if (insights.homePassingStyle) profile.push({ kind: "text", label: `${homeTeam} passing`, value: `${fmt(insights.homePassingStyle.passAccuracyPct, 1)}% accuracy, ${fmt(insights.homePassingStyle.longBallSharePct, 1)}% long balls` });
     if (insights.awayPassingStyle) profile.push({ kind: "text", label: `${awayTeam} passing`, value: `${fmt(insights.awayPassingStyle.passAccuracyPct, 1)}% accuracy, ${fmt(insights.awayPassingStyle.longBallSharePct, 1)}% long balls` });
     if (insights.homeAerialEstimate && insights.awayAerialEstimate) {
-      profile.push({ kind: "bar", label: "Aerial duels won (last 5)", home: insights.homeAerialEstimate.aerialDuelsWonFor, away: insights.awayAerialEstimate.aerialDuelsWonFor, homeLabel: homeTeam, awayLabel: awayTeam });
+      profile.push({ kind: "bar", label: "Aerial duels won (last 10)", home: insights.homeAerialEstimate.aerialDuelsWonFor, away: insights.awayAerialEstimate.aerialDuelsWonFor, homeLabel: homeTeam, awayLabel: awayTeam });
     }
     if (insights.homeGoalkeepingEstimate) profile.push({ kind: "text", label: `${homeTeam} goalkeeping`, value: `${insights.homeGoalkeepingEstimate.savesFor} saves / ${insights.homeGoalkeepingEstimate.shotsOnTargetFaced} faced (${fmt(insights.homeGoalkeepingEstimate.savePct, 1)}%), ${insights.homeGoalkeepingEstimate.goalsConceded} conceded` });
     if (insights.awayGoalkeepingEstimate) profile.push({ kind: "text", label: `${awayTeam} goalkeeping`, value: `${insights.awayGoalkeepingEstimate.savesFor} saves / ${insights.awayGoalkeepingEstimate.shotsOnTargetFaced} faced (${fmt(insights.awayGoalkeepingEstimate.savePct, 1)}%), ${insights.awayGoalkeepingEstimate.goalsConceded} conceded` });
@@ -130,6 +183,14 @@ export function buildSections(report: ReportJson): Section[] {
 
     // --- Standings & stakes ---
     const standings: Row[] = [];
+    if (insights.homeEloRating && insights.awayEloRating) {
+      standings.push({ kind: "bar", label: "Elo rating (clubelo.com)", home: insights.homeEloRating.elo, away: insights.awayEloRating.elo, homeLabel: `${homeTeam} (#${insights.homeEloRating.rank} world)`, awayLabel: `${awayTeam} (#${insights.awayEloRating.rank} world)` });
+    }
+    if (insights.homeClubStrength && insights.awayClubStrength) {
+      standings.push({ kind: "bar", label: "Overall strength (statsultra.com)", home: insights.homeClubStrength.overall, away: insights.awayClubStrength.overall, homeLabel: homeTeam, awayLabel: awayTeam });
+      standings.push({ kind: "bar", label: "Attack rating", home: insights.homeClubStrength.attack, away: insights.awayClubStrength.attack, homeLabel: homeTeam, awayLabel: awayTeam });
+      standings.push({ kind: "bar", label: "Defense rating", home: insights.homeClubStrength.defense, away: insights.awayClubStrength.defense, homeLabel: homeTeam, awayLabel: awayTeam });
+    }
     if (insights.homeStandingsZone) {
       const z = insights.homeStandingsZone;
       standings.push({ kind: "text", label: homeTeam, value: `#${z.position}/${z.totalTeams} (${z.zone})${z.pointsFromBoundary != null ? `, ${z.pointsFromBoundary}pts from boundary${z.inTheMix ? " -- in the mix" : ""}` : ""}` });
@@ -177,7 +238,17 @@ export function buildSections(report: ReportJson): Section[] {
     if (insights.experienceH2H) situational.push({ kind: "text", label: "Experience/H2H alignment", value: insights.experienceH2H.aligned == null ? "n/a" : insights.experienceH2H.aligned ? "more experienced squad also holds the H2H edge" : "not aligned" });
     if (insights.travelInfo) {
       const t = insights.travelInfo;
-      situational.push({ kind: "text", label: "Travel", value: t.awayTraveling ? `${awayTeam} traveling (~${t.awayTravelDistanceKm ?? "?"}km)` : t.homeTraveling ? `${homeTeam} traveling (~${t.homeTravelDistanceKm ?? "?"}km)` : "Both at home turf" });
+      const tzSuffix = (h: number | null) => (h != null && h > 0 ? `, ${h}h tz diff` : "");
+      const timeSuffix = (h: number | null) => (h != null ? `, ~${h}h travel` : "");
+      situational.push({
+        kind: "text",
+        label: "Travel",
+        value: t.awayTraveling
+          ? `${awayTeam} traveling (~${t.awayTravelDistanceKm ?? "?"}km${timeSuffix(t.awayTravelTimeHours)}${tzSuffix(t.awayTimezoneDiffHours)})`
+          : t.homeTraveling
+            ? `${homeTeam} traveling (~${t.homeTravelDistanceKm ?? "?"}km${timeSuffix(t.homeTravelTimeHours)}${tzSuffix(t.homeTimezoneDiffHours)})`
+            : "Both at home turf",
+      });
     }
     if (situational.length) sections.push({ title: "Situational factors", icon: "clock", rows: situational });
 
@@ -195,6 +266,13 @@ export function buildSections(report: ReportJson): Section[] {
     };
     presenceRow(insights.homePresence, `${homeTeam} availability`);
     presenceRow(insights.awayPresence, `${awayTeam} availability`);
+    const benchRow = (b: typeof insights.homeBenchInfo, label: string) => {
+      if (!b) return;
+      const fmt = (v: number | null) => (v != null ? `€${(v / 1_000_000).toFixed(0)}m` : "n/a");
+      availability.push({ kind: "text", label, value: `${b.benchSize} named, ${fmt(b.benchTotalMarketValue)} combined value vs starting XI's ${fmt(b.startingTotalMarketValue)}` });
+    };
+    benchRow(insights.homeBenchInfo, `${homeTeam} bench`);
+    benchRow(insights.awayBenchInfo, `${awayTeam} bench`);
     if (availability.length) sections.push({ title: "Availability", icon: "user-check", rows: availability });
   }
 
@@ -210,9 +288,22 @@ export function buildSections(report: ReportJson): Section[] {
     if (f.bttsSharePct != null) formRows.push({ kind: "text", label: `${label} BTTS rate`, value: `${f.bttsSharePct}%` });
     if (f.cleanSheetStreak != null && f.cleanSheetStreak >= 2) formRows.push({ kind: "text", label: `${label} clean sheets`, value: `${f.cleanSheetStreak}-game streak`, tone: "good" });
     if (f.scorelessStreak != null && f.scorelessStreak >= 2) formRows.push({ kind: "text", label: `${label} scoreless`, value: `${f.scorelessStreak}-game streak`, tone: "bad" });
+    if (f.over25SharePct != null) formRows.push({ kind: "text", label: `${label} over/under (last 10)`, value: `O1.5 ${f.over15SharePct}% / O2.5 ${f.over25SharePct}% / O3.5 ${f.over35SharePct}%` });
+    if (f.cleanSheetSharePct != null) formRows.push({ kind: "text", label: `${label} CS% / FTS% (last 10)`, value: `${f.cleanSheetSharePct}% / ${f.failedToScoreSharePct}%` });
     if (f.halfSplit) formRows.push({ kind: "text", label: `${label} half split`, value: `1H ${f.halfSplit.firstHalfGoalsFor}-${f.halfSplit.firstHalfGoalsAgainst}, 2H ${f.halfSplit.secondHalfGoalsFor}-${f.halfSplit.secondHalfGoalsAgainst}` });
     if (f.gapsBetweenLastThree.length) formRows.push({ kind: "text", label: `${label} fixture gaps`, value: `${f.gapsBetweenLastThree.join(", ")} days` });
+    formRows.push({ kind: "text", label: `${label} fixture congestion`, value: `${f.matchesLast7Days} in last 7d, ${f.matchesLast14Days} in last 14d`, tone: f.matchesLast7Days >= 3 ? "warn" : undefined });
     if (f.recentCompetitions.length > 1) formRows.push({ kind: "text", label: `${label} competitions`, value: f.recentCompetitions.join(", ") });
+    if (f.formByCompetition.length > 1) formRows.push({ kind: "text", label: `${label} form by competition`, value: f.formByCompetition.map((c) => `${c.competition} ${c.wins}W-${c.draws}D-${c.losses}L, ${c.goalsFor}-${c.goalsAgainst}`).join(" | ") });
+    if (f.winRatePct != null) formRows.push({ kind: "text", label: `${label} rates (last 10)`, value: `W${f.winRatePct}%/D${f.drawRatePct}%/L${f.lossRatePct}%, ${f.pointsPerGame} ppg, ${f.goalsForPerGame}-${f.goalsAgainstPerGame} goals/game` });
+    if (f.venueSplitForm) {
+      const v = f.venueSplitForm;
+      formRows.push({
+        kind: "text",
+        label: `${label} true venue split`,
+        value: `home ${v.homeWins}W-${v.homeDraws}D-${v.homeLosses}L, ${v.homeGoalsFor}-${v.homeGoalsAgainst} (n=${v.homeSampleSize}) / away ${v.awayWins}W-${v.awayDraws}D-${v.awayLosses}L, ${v.awayGoalsFor}-${v.awayGoalsAgainst} (n=${v.awaySampleSize}) / neutral ${v.neutralWins}W-${v.neutralDraws}D-${v.neutralLosses}L, ${v.neutralGoalsFor}-${v.neutralGoalsAgainst} (n=${v.neutralSampleSize})`,
+      });
+    }
   };
   addFormRows(form, report.team);
   addFormRows(opponentForm, oppName);
@@ -233,6 +324,35 @@ export function buildSections(report: ReportJson): Section[] {
     if (profile.keyInjuries?.length) squadRows.push({ kind: "text", label: `${label} key injuries`, value: profile.keyInjuries.map((i) => i.name).join(", "), tone: "warn" });
     else if (profile.injuries?.length) squadRows.push({ kind: "text", label: `${label} injuries`, value: profile.injuries.map((i) => i.name).join(", "), tone: "warn" });
     if (profile.missingMidfielders?.length) squadRows.push({ kind: "text", label: `${label} missing midfielders`, value: profile.missingMidfielders.join(", "), tone: "warn" });
+    if (profile.missingAttackers?.length) squadRows.push({ kind: "text", label: `${label} missing attackers`, value: profile.missingAttackers.join(", "), tone: "warn" });
+    if (profile.missingDefenders?.length) squadRows.push({ kind: "text", label: `${label} missing defenders`, value: profile.missingDefenders.join(", "), tone: "warn" });
+    if (profile.missingGoalkeepers?.length) squadRows.push({ kind: "text", label: `${label} missing goalkeepers`, value: profile.missingGoalkeepers.join(", "), tone: "warn" });
+    if (profile.squad) {
+      const benchRegulars = profile.squad
+        .filter((m) => m.recentUsage && m.recentUsage.subAppearances + m.recentUsage.unusedBench >= 2 && m.recentUsage.subAppearances + m.recentUsage.unusedBench > m.recentUsage.starts)
+        .sort((a, b) => (b.recentUsage!.matchesInSquad ?? 0) - (a.recentUsage!.matchesInSquad ?? 0))
+        .slice(0, 5);
+      if (benchRegulars.length) {
+        squadRows.push({
+          kind: "text",
+          label: `${label} bench regulars (last 20)`,
+          value: benchRegulars.map((m) => `${m.name} (${m.recentUsage!.starts} starts, ${m.recentUsage!.subAppearances} sub apps, ${m.recentUsage!.unusedBench} unused)`).join(", "),
+        });
+      }
+      const recentFormLeaders = profile.squad
+        .filter((m) => m.recentUsage && m.recentUsage.totalGoals + m.recentUsage.totalAssists > 0)
+        .sort((a, b) => (b.recentUsage!.totalGoals + b.recentUsage!.totalAssists) - (a.recentUsage!.totalGoals + a.recentUsage!.totalAssists))
+        .slice(0, 3);
+      if (recentFormLeaders.length) {
+        squadRows.push({
+          kind: "text",
+          label: `${label} recent form (last 20)`,
+          value: recentFormLeaders
+            .map((m) => `${m.name} (${m.recentUsage!.totalGoals}g/${m.recentUsage!.totalAssists}a, ${m.recentUsage!.totalXg.toFixed(2)}xG${m.recentUsage!.totalKeyPasses > 0 ? `, ${m.recentUsage!.totalKeyPasses} KP` : ""}${m.recentUsage!.goalsPer90 != null ? `, ${m.recentUsage!.goalsPer90}/90` : ""}${m.recentUsage!.avgRating != null ? `, ${m.recentUsage!.avgRating} rating` : ""})`)
+            .join(", "),
+        });
+      }
+    }
     if (profile.recentTransfers?.length) {
       const shown = profile.recentTransfers.slice(0, 5);
       squadRows.push({ kind: "text", label: `${label} transfers`, value: shown.map((t) => `${t.playerName} (${t.direction}${t.date ? `, ${t.date.slice(0, 10)}` : ""})`).join("; ") });
@@ -240,6 +360,19 @@ export function buildSections(report: ReportJson): Section[] {
   };
   squadInfo(teamProfile, ownIsHome ? homeTeam : awayTeam);
   squadInfo(opponentProfile, oppName);
+  if (insights?.homeSquadStrength || insights?.awaySquadStrength) {
+    const fmt = (v: number | null) => (v != null ? `€${(v / 1_000_000).toFixed(0)}m` : "n/a");
+    const strengthRow = (s: typeof insights.homeSquadStrength, label: string) => {
+      if (!s) return;
+      squadRows.push({
+        kind: "text",
+        label: `${label} squad value`,
+        value: `${fmt(s.totalValue)} total (${fmt(s.availableValue)} available) -- attack ${fmt(s.attackValue)}, midfield ${fmt(s.midfieldValue)}, defense ${fmt(s.defenseValue)}, GK ${fmt(s.goalkeeperValue)}`,
+      });
+    };
+    strengthRow(insights.homeSquadStrength, homeTeam);
+    strengthRow(insights.awaySquadStrength, awayTeam);
+  }
   if (squadRows.length) sections.push({ title: "Squad", icon: "users", rows: squadRows });
 
   return sections;

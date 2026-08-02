@@ -129,6 +129,9 @@ function toMatchInfo(m: any): MatchInfo {
     awayScore: finished ? m.score[1] : null,
     homeScoreHT: null,
     awayScoreHT: null,
+    season: null,
+    round: null,
+    matchId: String(matchId),
   };
 }
 
@@ -143,7 +146,7 @@ export async function getSoccerdeskMatches(teamName: string): Promise<MatchInfo[
 
 function extractLineupSide(side: any): LineupPlayer[] | null {
   if (!side?.starting) return null;
-  return side.starting.map((p: any) => ({ name: p.name, position: null }));
+  return side.starting.map((p: any) => ({ name: p.name, position: null, substitute: null, minutesPlayed: null, goals: null, assists: null, xg: null, xa: null, shots: null, shotsOnTarget: null, tackles: null, interceptions: null, fouls: null, rating: null, keyPasses: null }));
 }
 
 // Undocumented incident type codes, reverse-engineered from real match data:
@@ -245,10 +248,14 @@ export async function getSoccerdeskMatchDetails(match: MatchInfo): Promise<Match
     refereeStats: null,
     attendance: null,
     weather: null,
+    weatherDetail: null,
     headToHeadSummary,
     headToHeadStreaks: null,
+    recentMeetings: null,
     homeLineup: extractLineupSide(home),
     awayLineup: extractLineupSide(away),
+    homeBench: null,
+    awayBench: null,
     homeFormation: null,
     awayFormation: null,
     homeTeamCountry: null,
@@ -266,6 +273,7 @@ export async function getSoccerdeskMatchDetails(match: MatchInfo): Promise<Match
     awayTeamSeasonStats: null,
     matchStats: null,
     eventTimeline: extractTimeline(data.incs),
+    setPieceGoals: null,
     playerOfTheMatch: null,
     note: [
       "venue/referee/attendance/weather/match-stats not available on SoccerDesk",
@@ -299,6 +307,7 @@ export async function getSoccerdeskTeamProfile(teamName: string): Promise<TeamPr
     seasonStats: null,
     seasonStatsSource: null,
     defensiveStats: null,
+    recentUsage: null,
   }));
 
   return {
@@ -310,5 +319,8 @@ export async function getSoccerdeskTeamProfile(teamName: string): Promise<TeamPr
     keyInjuries: null,
     recentTransfers: null,
     missingMidfielders: null, // computed centrally in search.ts after merging
+    missingAttackers: null,
+    missingDefenders: null,
+    missingGoalkeepers: null,
   };
 }

@@ -110,6 +110,9 @@ function toMatchInfo(m: any): MatchInfo {
     awayScore: finished ? m.score?.teamB ?? null : null,
     homeScoreHT: null,
     awayScoreHT: null,
+    season: null,
+    round: null,
+    matchId: String(m.link.id),
   };
 }
 
@@ -127,7 +130,7 @@ export async function getGoalMatches(teamName: string): Promise<MatchInfo[]> {
 
 function extractLineupSide(side: any): LineupPlayer[] | null {
   if (!side?.lineup) return null;
-  return side.lineup.map((p: any) => ({ name: p.person.name, position: null }));
+  return side.lineup.map((p: any) => ({ name: p.person.name, position: null, substitute: null, minutesPlayed: null, goals: null, assists: null, xg: null, xa: null, shots: null, shotsOnTarget: null, tackles: null, interceptions: null, fouls: null, rating: null, keyPasses: null }));
 }
 
 function formatFormation(f: string | undefined): string | null {
@@ -215,12 +218,16 @@ export async function getGoalMatchDetails(match: MatchInfo): Promise<MatchDetail
     refereeStats: null,
     attendance: null,
     weather: null,
+    weatherDetail: null,
     headToHeadSummary: h2hStats
       ? { homeWins: h2hStats.teamAWins ?? 0, awayWins: h2hStats.teamBWins ?? 0, draws: h2hStats.draws ?? 0 }
       : null,
     headToHeadStreaks: null,
+    recentMeetings: null,
     homeLineup: extractLineupSide(m.lineups?.teamA),
     awayLineup: extractLineupSide(m.lineups?.teamB),
+    homeBench: null,
+    awayBench: null,
     homeFormation: formatFormation(m.lineups?.teamA?.formation),
     awayFormation: formatFormation(m.lineups?.teamB?.formation),
     homeTeamCountry: null,
@@ -238,6 +245,7 @@ export async function getGoalMatchDetails(match: MatchInfo): Promise<MatchDetail
     awayTeamSeasonStats: null,
     matchStats: extractMatchStats(m.stats),
     eventTimeline: extractTimeline(m.keyEvents),
+    setPieceGoals: null,
     playerOfTheMatch: null,
     note: "referee not populated by Goal.com for any match checked; lineups include a `confirmed` flag not surfaced here",
   };
@@ -281,6 +289,7 @@ export async function getGoalTeamProfile(teamName: string): Promise<TeamProfile>
       : null,
     seasonStatsSource: p.stats ? "goal" : null,
     defensiveStats: null,
+    recentUsage: null,
   }));
 
   return {
@@ -292,5 +301,8 @@ export async function getGoalTeamProfile(teamName: string): Promise<TeamProfile>
     keyInjuries: null,
     recentTransfers: null,
     missingMidfielders: null, // computed centrally in search.ts after merging
+    missingAttackers: null,
+    missingDefenders: null,
+    missingGoalkeepers: null,
   };
 }

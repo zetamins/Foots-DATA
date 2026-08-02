@@ -57,6 +57,12 @@ export default function Dashboard() {
         <button
           type="submit"
           disabled={status === "loading" || !team.trim()}
+          // Server and this component's initial client render always agree
+          // (both start from team="", status="idle") -- a mismatch here in
+          // practice comes from something outside React's control touching
+          // the DOM pre-hydration (browser autofill/extensions, per React's
+          // own hydration-mismatch docs), not from this logic itself.
+          suppressHydrationWarning
           className="flex items-center gap-1.5 rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-40 dark:bg-white dark:text-neutral-900"
         >
           <Search className="h-4 w-4" />

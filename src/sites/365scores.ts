@@ -102,6 +102,9 @@ function toMatchInfo(g: any): MatchInfo {
     awayScore: finished ? Math.round(away.score) : null,
     homeScoreHT: null,
     awayScoreHT: null,
+    season: null,
+    round: null,
+    matchId: String(g.id),
   };
 }
 
@@ -130,7 +133,7 @@ function extractLineupSide(competitor: any, nameById: Map<number, string>): Line
   if (!members) return null;
   return members
     .filter((m: any) => m.status === 1) // 1 = Starting XI
-    .map((m: any) => ({ name: nameById.get(m.id) ?? "Unknown", position: m.position?.name ?? null }));
+    .map((m: any) => ({ name: nameById.get(m.id) ?? "Unknown", position: m.position?.name ?? null, substitute: null, minutesPlayed: null, goals: null, assists: null, xg: null, xa: null, shots: null, shotsOnTarget: null, tackles: null, interceptions: null, fouls: null, rating: null, keyPasses: null }));
 }
 
 const EVENT_TYPE_NAMES: Record<number, string> = { 1: "Goal", 1000: "Substitution" };
@@ -204,10 +207,14 @@ export async function get365ScoresMatchDetails(match: MatchInfo): Promise<MatchD
     refereeStats: null,
     attendance: g.venue?.attendance ?? null,
     weather: null,
+    weatherDetail: null,
     headToHeadSummary: null,
     headToHeadStreaks: null,
+    recentMeetings: null,
     homeLineup,
     awayLineup,
+    homeBench: null,
+    awayBench: null,
     homeFormation: g.homeCompetitor?.lineups?.formation ?? null,
     awayFormation: g.awayCompetitor?.lineups?.formation ?? null,
     homeTeamCountry: null,
@@ -225,6 +232,7 @@ export async function get365ScoresMatchDetails(match: MatchInfo): Promise<MatchD
     awayTeamSeasonStats: null,
     matchStats: null,
     eventTimeline: extractTimeline(g.events, meta.homeId, nameById),
+    setPieceGoals: null,
     playerOfTheMatch: null,
     note: "match stats and head-to-head not available from 365scores (no endpoint found)",
   };
@@ -251,6 +259,7 @@ export async function get365ScoresTeamProfile(teamName: string): Promise<TeamPro
     seasonStats: null,
     seasonStatsSource: null,
     defensiveStats: null,
+    recentUsage: null,
   }));
 
   const ages = squad.map((s) => s.age).filter((a): a is number => a != null);
@@ -264,5 +273,8 @@ export async function get365ScoresTeamProfile(teamName: string): Promise<TeamPro
     keyInjuries: null,
     recentTransfers: null,
     missingMidfielders: null, // computed centrally in search.ts after merging
+    missingAttackers: null,
+    missingDefenders: null,
+    missingGoalkeepers: null,
   };
 }

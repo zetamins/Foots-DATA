@@ -154,6 +154,12 @@ export async function getFotmobMatches(teamName: string): Promise<MatchInfo[]> {
     // full-time score); Sofascore's do, see sofascore.ts.
     homeScoreHT: null,
     awayScoreHT: null,
+    // Fotmob doesn't publish a distinct season label or round number on this
+    // fixture-list payload -- Sofascore-only field, see MatchInfo's doc
+    // comment.
+    season: null,
+    round: null,
+    matchId: String(f.id),
   }));
 }
 
@@ -162,7 +168,7 @@ function extractLineup(team: any): LineupPlayer[] | null {
   // Fotmob only gives a numeric positionId here with no legend on this page
   // to translate it (e.g. GK/DF/MF/FW) -- storing the raw id rather than
   // guessing a mapping that could be wrong.
-  return team.starters.map((p: any) => ({ name: p.name, position: p.positionId != null ? String(p.positionId) : null }));
+  return team.starters.map((p: any) => ({ name: p.name, position: p.positionId != null ? String(p.positionId) : null, substitute: null, minutesPlayed: null, goals: null, assists: null, xg: null, xa: null, shots: null, shotsOnTarget: null, tackles: null, interceptions: null, fouls: null, rating: null, keyPasses: null }));
 }
 
 // Field names (type/time/player/isHome/newScore) confirmed against a
@@ -214,6 +220,7 @@ function extractSquad(squadData: any): SquadMember[] | null {
       seasonStats: null,
       seasonStatsSource: null,
       defensiveStats: null,
+      recentUsage: null,
     })),
   );
 }
@@ -270,6 +277,9 @@ export async function getFotmobTeamProfile(teamName: string): Promise<TeamProfil
     keyInjuries,
     recentTransfers: extractTransfers(teamData.transfers),
     missingMidfielders: null, // computed centrally in search.ts after merging
+    missingAttackers: null,
+    missingDefenders: null,
+    missingGoalkeepers: null,
   };
 }
 
@@ -293,13 +303,20 @@ export async function getFotmobMatchDetails(match: MatchInfo): Promise<MatchDeta
     refereeStats: null,
     attendance: infoBox.Attendance ?? null,
     weather: weather ? `${weather.description}, ${weather.temperature}°C` : null,
+    // Fotmob's own weather blob only carries description+temperature, no
+    // humidity/wind/precip -- structured detail only ever comes from the
+    // wttr.in enrichment step in search.ts.
+    weatherDetail: null,
     // Fotmob's h2h.summary is an undocumented 3-number array with no way to
     // verify which number is home/away/draws from this page alone -- leaving
     // unset rather than guessing at an attribution that could be wrong.
     headToHeadSummary: null,
     headToHeadStreaks: null,
+    recentMeetings: null,
     homeLineup: extractLineup(content.lineup?.homeTeam),
     awayLineup: extractLineup(content.lineup?.awayTeam),
+    homeBench: null,
+    awayBench: null,
     homeFormation: content.lineup?.homeTeam?.formation ?? null,
     awayFormation: content.lineup?.awayTeam?.formation ?? null,
     homeTeamCountry: null,
@@ -323,6 +340,7 @@ export async function getFotmobMatchDetails(match: MatchInfo): Promise<MatchDeta
     awayTeamSeasonStats: null,
     matchStats: extractMatchStats(content.stats),
     eventTimeline: extractTimeline(content.matchFacts),
+    setPieceGoals: null,
     playerOfTheMatch: extractPlayerOfTheMatch(content.matchFacts?.playerOfTheMatch),
     note: content.lineup?.lineupType === "lastStartingLineups" ? "lineup is last known XI, not confirmed" : undefined,
   };

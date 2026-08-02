@@ -121,6 +121,8 @@ interface SofascoreEvent {
   tournament: { name: string };
   homeScore?: { current: number; period1: number };
   awayScore?: { current: number; period1: number };
+  season?: { name: string };
+  roundInfo?: { round: number };
 }
 
 function toMatchInfo(e: SofascoreEvent): MatchInfo {
@@ -137,6 +139,11 @@ function toMatchInfo(e: SofascoreEvent): MatchInfo {
     awayScore: e.awayScore?.current ?? null,
     homeScoreHT: e.homeScore?.period1 ?? null,
     awayScoreHT: e.awayScore?.period1 ?? null,
+    // Undefined (not just absent) for friendlies/cups with no round -- see
+    // MatchInfo.round's doc comment.
+    season: e.season?.name ?? null,
+    round: e.roundInfo?.round ?? null,
+    matchId: String(e.id),
   };
 }
 
@@ -162,9 +169,44 @@ export async function getSofascoreMatches(teamName: string): Promise<MatchInfo[]
   }
 }
 
+// side.players carries the FULL matchday squad (starting XI + bench, both
+// used and unused subs) -- confirmed live: a 20-player array for a normal
+// matchday (11 + 9), each with its own `substitute` boolean and (once
+// played) a `statistics.minutesPlayed`. Filtering here keeps homeLineup/
+// awayLineup meaning exactly "starting XI" as every existing caller already
+// assumes (computePresence, computeRotationInfo's startingXISize) -- see
+// extractBench below for the other half.
+function extractLineupPlayer(p: any, substitute: boolean): LineupPlayer {
+  const s = p.statistics;
+  return {
+    name: p.player.name,
+    position: p.player.position ?? null,
+    substitute,
+    minutesPlayed: s?.minutesPlayed ?? null,
+    goals: s?.goals ?? null,
+    assists: s?.goalAssist ?? null,
+    xg: s?.expectedGoals ?? null,
+    xa: s?.expectedAssists ?? null,
+    shots: s?.totalShots ?? null,
+    shotsOnTarget: s?.onTargetScoringAttempt ?? null,
+    tackles: s?.totalTackle ?? null,
+    interceptions: s?.interceptionWon ?? null,
+    fouls: s?.fouls ?? null,
+    rating: s?.rating ?? null,
+    keyPasses: s?.keyPass ?? null,
+  };
+}
+
 function extractLineup(side: any): LineupPlayer[] | null {
   if (!side?.players) return null;
-  return side.players.map((p: any) => ({ name: p.player.name, position: p.player.position ?? null }));
+  return side.players.filter((p: any) => p.substitute === false).map((p: any) => extractLineupPlayer(p, false));
+}
+
+function extractBench(side: any): LineupPlayer[] | null {
+  if (!side?.players) return null;
+  const bench = side.players.filter((p: any) => p.substitute === true);
+  if (!bench.length) return null;
+  return bench.map((p: any) => extractLineupPlayer(p, true));
 }
 
 function extractRefereeStats(referee: any): RefereeStats | null {
@@ -174,6 +216,9 @@ function extractRefereeStats(referee: any): RefereeStats | null {
     yellowCards: referee.yellowCards ?? 0,
     redCards: referee.redCards ?? 0,
     yellowCardsPerGame: (referee.yellowCards / referee.games).toFixed(1),
+    penaltiesAwarded: null, // computed centrally in search.ts after merging
+    homeAwayBias: null,
+    foulsPerGame: null,
   };
 }
 
@@ -240,6 +285,31 @@ function extractIncidents(incidents: any): TimelineEvent[] | null {
   }));
 }
 
+function emptyGoalCounts(): { corner: number; penalty: number; freeKick: number } {
+  return { corner: 0, penalty: 0, freeKick: 0 };
+}
+
+// Confirmed live: shotmap's own `situation` field on a goal-type shot
+// carries "corner", "penalty", "set-piece" (direct free-kicks) alongside
+// open-play values ("regular", "assisted", "fast-break") -- a real
+// classification the incidents/goal-events endpoint doesn't have
+// (incidentClass there only ever showed "regular"/"ownGoal"). Only present
+// once a match has actually been played -- empty (not null) for the
+// not-yet-played upcoming match, same as other match-in-progress fields.
+function extractSetPieceGoals(shotmap: any): MatchDetails["setPieceGoals"] {
+  const shots: any[] = shotmap?.shotmap ?? [];
+  const home = emptyGoalCounts();
+  const away = emptyGoalCounts();
+  for (const s of shots) {
+    if (s.shotType !== "goal") continue;
+    const side = s.isHome ? home : away;
+    if (s.situation === "corner") side.corner++;
+    else if (s.situation === "penalty") side.penalty++;
+    else if (s.situation === "set-piece") side.freeKick++;
+  }
+  return { home, away };
+}
+
 /**
  * Every endpoint below is same-origin /api/v1/... , in scope since
  * Sofascore's robots.txt (unlike Fotmob's) doesn't disallow /api/. Several
@@ -252,7 +322,7 @@ function extractIncidents(incidents: any): TimelineEvent[] | null {
  */
 function extractManager(rawManager: any): ManagerInfo | null {
   if (!rawManager?.name) return null;
-  return { name: rawManager.name, country: rawManager.country?.name ?? null };
+  return { name: rawManager.name, country: rawManager.country?.name ?? null, appointedDate: null, previousManager: null, recentAppointment: null };
 }
 
 // See ManagerClubRecord's doc comment for exactly what this is (and isn't).
@@ -317,6 +387,9 @@ export async function getSofascoreMatchDetails(match: MatchInfo): Promise<MatchD
     const incidents = await fetchJsonOptional(page, `https://www.sofascore.com/api/v1/event/${eventId}/incidents`);
 
     await sleep(800);
+    const shotmap = await fetchJsonOptional(page, `https://www.sofascore.com/api/v1/event/${eventId}/shotmap`);
+
+    await sleep(800);
     const bestPlayers = await fetchJsonOptional(page, `https://www.sofascore.com/api/v1/event/${eventId}/best-players`);
 
     let standings: any = null;
@@ -362,6 +435,7 @@ export async function getSofascoreMatchDetails(match: MatchInfo): Promise<MatchD
       refereeStats: extractRefereeStats(e.referee),
       attendance: e.attendance ?? null,
       weather: null,
+      weatherDetail: null,
       headToHeadSummary: h2h?.teamDuel
         ? {
             homeWins: h2h.teamDuel.homeWins ?? 0,
@@ -370,8 +444,11 @@ export async function getSofascoreMatchDetails(match: MatchInfo): Promise<MatchD
           }
         : null,
       headToHeadStreaks: extractStreaks(streaks),
+      recentMeetings: null, // computed centrally in search.ts after merging
       homeLineup: extractLineup(lineups?.home),
       awayLineup: extractLineup(lineups?.away),
+      homeBench: extractBench(lineups?.home),
+      awayBench: extractBench(lineups?.away),
       homeFormation: lineups?.home?.formation ?? null,
       awayFormation: lineups?.away?.formation ?? null,
       homeTeamCountry: e.homeTeam.country?.name ?? null,
@@ -389,6 +466,7 @@ export async function getSofascoreMatchDetails(match: MatchInfo): Promise<MatchD
       awayTeamSeasonStats: extractSeasonStats(awaySeasonStats),
       matchStats: extractMatchStats(stats),
       eventTimeline: extractIncidents(incidents),
+      setPieceGoals: extractSetPieceGoals(shotmap),
       playerOfTheMatch: extractPlayerOfTheMatch(bestPlayers),
       note: [
         lineups ? `lineup ${lineups.confirmed ? "confirmed" : "predicted, not yet confirmed"}` : "lineup not published yet",
@@ -492,6 +570,7 @@ export async function getSofascoreTeamProfile(teamName: string): Promise<TeamPro
       seasonStats: topPlayerStats.get(p.player.name) ?? null,
       seasonStatsSource: topPlayerStats.has(p.player.name) ? "sofascore" : null,
       defensiveStats: null,
+      recentUsage: null,
     }));
 
     const transferDate = (t: any) => (t.transferDateTimestamp ? new Date(t.transferDateTimestamp * 1000).toISOString() : null);
@@ -527,6 +606,9 @@ export async function getSofascoreTeamProfile(teamName: string): Promise<TeamPro
       keyInjuries,
       recentTransfers: transfers.length ? transfers : null,
       missingMidfielders: null, // computed centrally in search.ts after merging
+      missingAttackers: null,
+      missingDefenders: null,
+      missingGoalkeepers: null,
     };
   } finally {
     await browser.close();

@@ -86,6 +86,41 @@ function normalizeCountry(name: string): string {
   return name.trim();
 }
 
+/**
+ * Standard-time UTC offset in hours for the same nations as COUNTRY_COORDS
+ * above -- real published offsets, not a derived/invented figure. Deliberately
+ * ignores daylight saving: which countries observe DST and exactly when it
+ * flips varies by hemisphere and by year, and getting that wrong would be
+ * worse than a clearly-labeled standard-time approximation. Countries
+ * spanning multiple zones (Russia, USA) use the zone of the coordinate
+ * already listed in COUNTRY_COORDS (Moscow, Washington DC) for consistency
+ * with the distance figure.
+ */
+const COUNTRY_UTC_OFFSET: Record<string, number> = {
+  England: 0, Scotland: 0, Wales: 0, "Northern Ireland": 0, Ireland: 0,
+  Spain: 1, Portugal: 0, France: 1, Germany: 1, Italy: 1, Netherlands: 1,
+  Belgium: 1, Switzerland: 1, Austria: 1, Poland: 1, "Czech Republic": 1,
+  Turkey: 3, Greece: 2, Croatia: 1, Serbia: 1, Ukraine: 2, Russia: 3,
+  Denmark: 1, Sweden: 1, Norway: 1, Finland: 2, Romania: 2, Hungary: 1,
+  Slovakia: 1, Slovenia: 1, Bulgaria: 2, "Bosnia and Herzegovina": 1,
+  Cyprus: 2, Israel: 2, Qatar: 3, "Saudi Arabia": 3, "United Arab Emirates": 4,
+  Egypt: 2, Morocco: 0, Algeria: 1, Tunisia: 1, Nigeria: 1, Senegal: 0,
+  Ghana: 0, "South Africa": 2, USA: -5, "United States of America": -5,
+  Canada: -5, Mexico: -6, Brazil: -3, Argentina: -3, Uruguay: -3,
+  Paraguay: -4, Chile: -4, Colombia: -5, Peru: -5, Ecuador: -5, Bolivia: -4,
+  Venezuela: -4, Japan: 9, "South Korea": 9, China: 8,
+  "People's Republic of China": 8, India: 5.5, Australia: 10,
+  "New Zealand": 12, Iran: 3.5, Iraq: 3, Jordan: 3,
+};
+
+/** Absolute standard-time difference in hours, or null if either country isn't in the static table. */
+export function countryTimezoneDiffHours(countryA: string, countryB: string): number | null {
+  const a = COUNTRY_UTC_OFFSET[normalizeCountry(countryA)];
+  const b = COUNTRY_UTC_OFFSET[normalizeCountry(countryB)];
+  if (a == null || b == null) return null;
+  return Math.round(Math.abs(a - b) * 10) / 10;
+}
+
 /** Haversine great-circle distance in km between two lat/lon points. */
 function haversineKm(a: { lat: number; lon: number }, b: { lat: number; lon: number }): number {
   const R = 6371;
@@ -103,4 +138,21 @@ export function countryDistanceKm(countryA: string, countryB: string): number | 
   const b = COUNTRY_COORDS[normalizeCountry(countryB)];
   if (!a || !b) return null;
   return haversineKm(a, b);
+}
+
+/**
+ * Door-to-door travel time estimate from a distance already computed via
+ * countryDistanceKm -- same "rough order of magnitude" framing as that
+ * figure, not a precise itinerary. Below 200km assumes ground transport
+ * (coach/train, ~80km/h average including stops -- realistic for the kind
+ * of short intra-region hops professional squads drive rather than fly).
+ * At or above that, assumes air travel at a standard commercial cruise
+ * speed (~850km/h) plus a fixed 2-hour overhead for check-in, taxi/
+ * takeoff/landing and disembarking -- the same rule of thumb commonly used
+ * for door-to-door flight-time estimates, not a fabricated figure specific
+ * to this project.
+ */
+export function travelTimeHours(distanceKm: number): number {
+  if (distanceKm < 200) return Number((distanceKm / 80).toFixed(1));
+  return Number((distanceKm / 850 + 2).toFixed(1));
 }

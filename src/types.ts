@@ -13,6 +13,20 @@ export interface MatchInfo {
   // for Fotmob and for not-yet-played/in-progress matches.
   homeScoreHT: number | null;
   awayScoreHT: number | null;
+  // Season label (e.g. "Premier League 25/26") -- Sofascore only, comes free
+  // on the same fixture-list/event fetch already made. Null from every other
+  // source, which don't expose a distinct season identifier at all.
+  season: string | null;
+  // Matchday/round number within the competition -- Sofascore only, and only
+  // for competitions that actually have rounds (league play); undefined on
+  // Sofascore's own payload for cups/friendlies, normalized to null here
+  // rather than a missing key.
+  round: number | null;
+  // The source's own internal match/event id -- always present (every
+  // source's data is keyed by one), just never surfaced as its own field
+  // before now; sourceUrl already embeds it but not as a bare id a caller
+  // can key off directly.
+  matchId: string;
 }
 
 export interface TeamSearchResult {
@@ -25,6 +39,37 @@ export interface TeamSearchResult {
 export interface LineupPlayer {
   name: string;
   position: string | null;
+  // Sofascore only -- null from every other source. homeLineup/awayLineup
+  // only ever contain substitute:false entries (the actual starting XI);
+  // this field exists so a caller can tell the difference if it ever
+  // receives a mixed list (e.g. homeBench below), not because the starting-
+  // XI arrays themselves are mixed.
+  substitute: boolean | null;
+  // Minutes actually played in that specific match -- present only once a
+  // match has been played (null for a not-yet-played lineup) and only for
+  // players who took the field at all; an unused substitute has no
+  // statistics block on Sofascore's own payload, so this stays null for
+  // them too (not 0 -- 0 would wrongly imply "played and recorded 0
+  // minutes" rather than "never came on").
+  minutesPlayed: number | null;
+  // Same Sofascore-only, "present once played" pattern as minutesPlayed --
+  // from the same per-player statistics block already fetched, confirmed
+  // live to actually carry per-match goals/xG/xA/shots/tackles/fouls/
+  // rating, not just passing stats.
+  goals: number | null;
+  assists: number | null;
+  xg: number | null;
+  xa: number | null;
+  shots: number | null;
+  shotsOnTarget: number | null;
+  tackles: number | null;
+  interceptions: number | null;
+  fouls: number | null;
+  rating: number | null;
+  // "keyPass" -- confirmed live present in the same per-player statistics
+  // block as the fields above (missed on the first pass through this
+  // payload; the earlier dump that didn't show it was truncated).
+  keyPasses: number | null;
 }
 
 export interface TeamStanding {
@@ -41,6 +86,12 @@ export interface TeamStanding {
   totalTeams: number | null;
 }
 
+export interface SetPieceGoalCounts {
+  corner: number;
+  penalty: number;
+  freeKick: number;
+}
+
 export interface TimelineEvent {
   minute: number;
   type: string;
@@ -52,6 +103,26 @@ export interface TimelineEvent {
 export interface ManagerInfo {
   name: string;
   country: string | null;
+  // From the manager's own Wikipedia page ("Managerial record by team and
+  // tenure" table, the row whose "To" column reads "Present") -- a more
+  // universal source than any single league's "current managers" list page
+  // (which only exists, with dates, for England). Null if their Wikipedia
+  // page doesn't have that table, or has no "Present" row (e.g. between
+  // jobs), or no page was found at all. Computed centrally in search.ts,
+  // not per-source -- see getManagerAppointmentDate.
+  appointedDate: string | null;
+  // From the CLUB's own "List of {Club} managers" Wikipedia page (a
+  // different page/table shape than appointedDate's -- see
+  // getPreviousManager) -- the manager immediately before the current one
+  // in that page's chronological table. Null if no such page was found
+  // under either title variant tried, or the table has fewer than 2 rows.
+  previousManager: string | null;
+  // Derived from appointedDate -- <=90 days old at search time counts as a
+  // recent change, the same "generous, round, not competition-tuned"
+  // threshold convention as CardDisciplineInfo's elevatedRisk cutoff
+  // elsewhere in this file. Null (not false) whenever appointedDate itself
+  // is null, so "recent" vs "unknown" stay distinguishable.
+  recentAppointment: boolean | null;
 }
 
 export interface RefereeStats {
@@ -59,6 +130,38 @@ export interface RefereeStats {
   yellowCards: number;
   redCards: number;
   yellowCardsPerGame: string;
+  // From worldfootball.net's own competition referee-stats page (the "11m"
+  // -- Elfmeter/penalty -- column), current season only, matched by name.
+  // Sofascore's own referee object (games/yellowCards/redCards above) has
+  // no penalty field at all -- confirmed live -- so this is the only
+  // source for it. Null if the competition isn't one worldfootball.net
+  // tracks in our small mapping (see worldfootball.ts), or the referee
+  // name doesn't match any row.
+  penaltiesAwarded: number | null;
+  // From football-data.co.uk's per-season, per-league CSV (real per-match
+  // card data, matched by referee surname) -- the only source found for
+  // this: worldfootball.net's own referee page has no home/away split, and
+  // Sofascore's referee object has neither penalties nor a venue split.
+  // Uses last season's file if the current season's isn't published yet
+  // (confirmed live: the file 404s outright before a season starts).
+  homeAwayBias: RefereeHomeAwayBias | null;
+  // From refsradar.com's referee profile page ("Fouls/g") -- confirmed
+  // live, plain server-rendered text, no browser needed. The one referee
+  // figure the other two supplemental sources above don't carry.
+  foulsPerGame: number | null;
+}
+
+export interface RefereeHomeAwayBias {
+  sampleSize: number;
+  homeCardsPerGame: number;
+  awayCardsPerGame: number;
+}
+
+export interface WeatherDetail {
+  tempC: number | null;
+  humidityPct: number | null;
+  windSpeedKmph: number | null;
+  precipMM: number | null;
 }
 
 export interface TeamSeasonStats {
@@ -78,16 +181,44 @@ export interface MatchDetails extends MatchInfo {
   refereeStats: RefereeStats | null;
   attendance: number | null;
   weather: string | null;
+  // Structured companion to `weather` (which stays a display string for
+  // backwards compatibility) -- same wttr.in same-day-approximation caveat
+  // applies (see getWttrWeather's doc comment): only populated within 2 days
+  // of kickoff, from the location's local midday reading.
+  weatherDetail: WeatherDetail | null;
   headToHeadSummary: { homeWins: number; awayWins: number; draws: number } | null;
   headToHeadStreaks: string[] | null;
+  // Individual past meetings between these two specific clubs, found within
+  // the already-fetched recent-form window (last20Overall) for whichever
+  // side supplied it -- NOT an exhaustive career head-to-head (Sofascore's
+  // own h2h endpoint only returns the aggregate teamDuel/managerDuel tally,
+  // confirmed live: no per-meeting match list exists there at all). Capped
+  // at the 3 most recent matches found this way, each with one extra
+  // details() fetch to pull formations/xG for that specific match.
+  recentMeetings: HeadToHeadMeeting[] | null;
   homeLineup: LineupPlayer[] | null;
   awayLineup: LineupPlayer[] | null;
+  // Named substitutes for that match (used or unused) -- Sofascore only,
+  // the only source whose lineup payload actually distinguishes bench from
+  // starting XI (confirmed live: a per-player `substitute` boolean, and
+  // `statistics.minutesPlayed` present only for whoever actually appeared).
+  // Previously this project had no way to tell "on the bench" from "not in
+  // the matchday squad at all" -- this is that fix.
+  homeBench: LineupPlayer[] | null;
+  awayBench: LineupPlayer[] | null;
   homeTeamStanding: TeamStanding | null;
   awayTeamStanding: TeamStanding | null;
   homeTeamSeasonStats: TeamSeasonStats | null;
   awayTeamSeasonStats: TeamSeasonStats | null;
   matchStats: { name: string; home: string; away: string }[] | null;
   eventTimeline: TimelineEvent[] | null;
+  // Sofascore only, from its shotmap endpoint's own `situation` field on
+  // goal-type shots -- confirmed live to carry "corner"/"penalty"/
+  // "set-piece" (direct free-kick) alongside open-play values, a real
+  // classification the incidents/timeline endpoint doesn't have. Only
+  // meaningful once a match has been played -- zeroed (not null) for the
+  // not-yet-played upcoming match.
+  setPieceGoals: { home: SetPieceGoalCounts; away: SetPieceGoalCounts } | null;
   playerOfTheMatch: { name: string; rating: string | null } | null;
   homeFormation: string | null;
   awayFormation: string | null;
@@ -120,6 +251,26 @@ export interface MatchDetails extends MatchInfo {
   homeSuspendedPlayers: string[] | null;
   awaySuspendedPlayers: string[] | null;
   note?: string;
+}
+
+export interface HeadToHeadMeeting {
+  date: string | null;
+  competition: string | null;
+  scoreline: string;
+  // Which side of THAT match the team supplying recentMeetings played --
+  // same "venue" convention as FormResult.
+  venue: "home" | "away";
+  homeFormation: string | null;
+  awayFormation: string | null;
+  // Parsed from that match's own matchStats ("Expected goals" entry, when
+  // present) -- null whenever the source didn't publish it for that match.
+  homeXg: number | null;
+  awayXg: number | null;
+  // Same details() fetch already made for formations/xG above -- the
+  // starting XI for that specific historical meeting, not the upcoming
+  // match's lineup.
+  homeLineup: LineupPlayer[] | null;
+  awayLineup: LineupPlayer[] | null;
 }
 
 export interface SeasonPlayerStats {
@@ -161,6 +312,46 @@ export interface DefensiveStats {
   chancesCreated: number | null;
 }
 
+// Rolled up from the same last20Overall enrichment as VenueSplitForm/
+// SeasonAdvancedStatsEstimate -- zero extra requests. matchesInSquad counts
+// every match the player was named for (starting XI or bench), whether or
+// not they actually played -- the direct answer to "0 minutes but named in
+// the lineup section means bench," and starts/subAppearances/unusedBench
+// split out exactly how they were used each time.
+export interface PlayerUsagePattern {
+  matchesInSquad: number;
+  starts: number;
+  subAppearances: number;
+  unusedBench: number;
+  totalMinutes: number;
+  // Summed across the same last20Overall sample, from the same per-match
+  // lineup/bench fetch -- zero extra requests. appearancesWithStats counts
+  // how many of those matches actually had a statistics block (used to
+  // compute avgRating honestly rather than dividing by matchesInSquad,
+  // which would include unused-bench matches with no stats at all).
+  totalGoals: number;
+  totalAssists: number;
+  totalXg: number;
+  totalXa: number;
+  totalShots: number;
+  totalShotsOnTarget: number;
+  totalTackles: number;
+  totalInterceptions: number;
+  totalFouls: number;
+  totalKeyPasses: number;
+  appearancesWithStats: number;
+  avgRating: number | null;
+  // Pure arithmetic on the totals above (stat / (totalMinutes/90)) -- not
+  // new data, just the same numbers normalized to a per-90-minutes rate,
+  // the standard way these are compared across players with different
+  // amounts of playing time. Null when totalMinutes is 0 (never played).
+  goalsPer90: number | null;
+  assistsPer90: number | null;
+  xgPer90: number | null;
+  xaPer90: number | null;
+  keyPassesPer90: number | null;
+}
+
 export interface SquadMember {
   name: string;
   role: string | null;
@@ -179,6 +370,10 @@ export interface SquadMember {
   // source, so this stays a separate optional tag rather than reusing
   // seasonStatsSource's type.
   defensiveStats: DefensiveStats | null;
+  // Sofascore only, from the last20Overall venue-classification enrichment
+  // (search.ts) -- null for a player never named in any of those matches'
+  // lineups (e.g. a fresh signing, or the enrichment didn't run/failed).
+  recentUsage: PlayerUsagePattern | null;
 }
 
 export interface TransferRecord {
@@ -205,6 +400,13 @@ export interface TeamProfile {
   // "MIDFIELDER" -- the different spellings/casings across sources).
   // Empty (not null) when there are injuries but none are midfielders.
   missingMidfielders: string[] | null;
+  // Same role-matching approach as missingMidfielders, applied to the other
+  // three broad position groups -- name lists only, not a fabricated
+  // "strength lost" score, since no source publishes per-position squad
+  // depth/quality to compute one against.
+  missingAttackers: string[] | null;
+  missingDefenders: string[] | null;
+  missingGoalkeepers: string[] | null;
 }
 
 export interface FormResult {
@@ -217,6 +419,46 @@ export interface FormResult {
   // Absolute goal difference for this result -- 1 means a narrow (one-goal)
   // margin, 0 means a draw.
   margin: number;
+  // Whether this specific match was played somewhere other than the team's
+  // own country despite the fixture data's home/away label -- e.g. a
+  // "home" match relocated to a neutral third country for a preseason tour.
+  // null until enriched (see enrichFormWithVenueClassification -- costs one
+  // extra details() fetch per match, only run on the last20Overall sample,
+  // not the full played history).
+  neutralVenue: boolean | null;
+  // Half-time score for this specific match ("1-0" format, own team's
+  // score first regardless of home/away) -- from the same details() fetch
+  // as neutralVenue above, so null under the same conditions (not yet
+  // enriched, or that particular match's source didn't publish a HT
+  // split). Distinct from FormSummary.halfSplit, which only ever exposed
+  // an aggregate across the sample, never a per-match figure.
+  htScoreline: string | null;
+}
+
+// venue-corrected W/D/L split from the last20Overall sample, once enriched
+// -- distinct from FormSummary's homeWinRatePct/awayWinRatePct, which use
+// the fixture data's home/away label as-is (uncorrected, but computed over
+// the FULL played history, not just the last 20) and don't exist for a
+// smaller, more expensive to compute, "true venue" breakdown.
+export interface VenueSplitForm {
+  homeSampleSize: number;
+  homeWins: number;
+  homeDraws: number;
+  homeLosses: number;
+  homeGoalsFor: number;
+  homeGoalsAgainst: number;
+  awaySampleSize: number;
+  awayWins: number;
+  awayDraws: number;
+  awayLosses: number;
+  awayGoalsFor: number;
+  awayGoalsAgainst: number;
+  neutralSampleSize: number;
+  neutralWins: number;
+  neutralDraws: number;
+  neutralLosses: number;
+  neutralGoalsFor: number;
+  neutralGoalsAgainst: number;
 }
 
 export interface FixtureGap {
@@ -247,12 +489,31 @@ export interface MomentumInfo {
   trend: "improving" | "declining" | "stable";
 }
 
+// W/D/L split for one competition, drawn from the same played-match sample
+// already fetched (matches.next/last, page 0 -- roughly a team's last/next
+// ~15-20 fixtures, not a full season) -- not a fresh fetch.
+export interface CompetitionFormRecord {
+  competition: string;
+  played: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  goalsFor: number;
+  goalsAgainst: number;
+}
+
 export interface FormSummary {
   last5Overall: FormResult[];
   // Same as last5Overall but 10 deep -- exposed so callers can filter by
   // competition (e.g. "only same-league results") for things last5Overall's
   // fixed window is too small a sample for.
   last10Overall: FormResult[];
+  // 20 deep -- the window the venue-classification/advanced-stats/per-
+  // player-usage enrichment actually runs against (search.ts), from the
+  // same already-fetched raw fixture pool (no new base requests), just a
+  // deeper per-match detail pass. Falls back to whatever's actually
+  // available if the raw pool has fewer than 20 played matches on record.
+  last20Overall: FormResult[];
   last5Home: FormResult[];
   last5Away: FormResult[];
   next5WithGaps: FixtureGap[];
@@ -295,6 +556,38 @@ export interface FormSummary {
   // null when there's no played-match sample at all.
   cleanSheetStreak: number | null;
   scorelessStreak: number | null;
+  // Over/Under thresholds -- share of the last 10 played matches whose total
+  // goals (both sides, from the scoreline string) exceeded each line. Same
+  // "last 10 played, null if no sample" shape as bttsSharePct.
+  over15SharePct: number | null;
+  over25SharePct: number | null;
+  over35SharePct: number | null;
+  // Share of the last 10 played matches with a clean sheet / without scoring
+  // -- the % companion to cleanSheetStreak/scorelessStreak above, which only
+  // track the CURRENT run rather than the overall rate across the sample.
+  cleanSheetSharePct: number | null;
+  failedToScoreSharePct: number | null;
+  // W/D/L broken out per competition, from the same played-match sample as
+  // last10Overall/last5Overall -- lets callers see "how have they done in
+  // the league specifically" vs "in cup competitions" without a new fetch.
+  formByCompetition: CompetitionFormRecord[];
+  // Played-match count in the trailing 7/14 days as of now -- a fixture-
+  // congestion signal distinct from gapsBetweenLastThree (which measures
+  // spacing between specific matches, not a rolling count).
+  matchesLast7Days: number;
+  matchesLast14Days: number;
+  // Set only after enrichFormWithVenueClassification runs (search.ts) --
+  // null otherwise, e.g. if the enrichment fetch loop failed entirely.
+  venueSplitForm: VenueSplitForm | null;
+  // Explicit rates over the last10Overall sample -- the win/draw/loss
+  // counts and goal totals already existed via last10Overall itself; these
+  // are just that same data pre-divided, not a new fetch.
+  winRatePct: number | null;
+  drawRatePct: number | null;
+  lossRatePct: number | null;
+  pointsPerGame: number | null;
+  goalsForPerGame: number | null;
+  goalsAgainstPerGame: number | null;
 }
 
 export interface CardDisciplineInfo {
@@ -455,6 +748,96 @@ export interface SeasonDefensiveErrorsEstimate {
   source: string;
 }
 
+// Same shape/scope pattern as SeasonShotsEstimate, but zero EXTRA requests --
+// these come from the same per-match statistics endpoint already fetched for
+// enrichFormWithVenueClassification/computeRecentMeetings (last20Overall
+// sample, both teams), just extracting more of what's already in that
+// payload. "Errors lead to a shot"/"Errors lead to a goal" are Sofascore's
+// own literal stat names (confirmed live), a more specific signal than
+// Goal.com's generic "Defensive error" (SeasonDefensiveErrorsEstimate) --
+// kept as a separate field rather than merged with it. Sample size can be
+// smaller than last20Overall's full 20 -- some historical matches don't
+// have every stat populated (early-season friendlies especially), same
+// graceful-degradation as every other Season*Estimate in this file.
+export interface SeasonAdvancedStatsEstimate {
+  sampleSize: number;
+  touchesInBoxFor: number;
+  touchesInBoxAgainst: number;
+  crossesFor: number;
+  crossesAgainst: number;
+  dribblesFor: number;
+  dribblesAgainst: number;
+  throughBallsFor: number;
+  throughBallsAgainst: number;
+  finalThirdEntriesFor: number;
+  finalThirdEntriesAgainst: number;
+  recoveriesFor: number;
+  recoveriesAgainst: number;
+  errorsLeadToShotFor: number;
+  errorsLeadToShotAgainst: number;
+  errorsLeadToGoalFor: number;
+  errorsLeadToGoalAgainst: number;
+  // Same zero-extra-request pattern as the fields above -- Sofascore's own
+  // per-match statistics endpoint carries roughly 40 named stats; these
+  // were added in a second pass after realizing only 8 had been mined the
+  // first time through.
+  shotsInsideBoxFor: number;
+  shotsInsideBoxAgainst: number;
+  shotsOutsideBoxFor: number;
+  shotsOutsideBoxAgainst: number;
+  shotsOffTargetFor: number;
+  shotsOffTargetAgainst: number;
+  blockedShotsFor: number;
+  blockedShotsAgainst: number;
+  offsidesFor: number;
+  offsidesAgainst: number;
+  bigChancesScoredFor: number;
+  bigChancesScoredAgainst: number;
+  dispossessedFor: number;
+  dispossessedAgainst: number;
+  // Team-level, distinct from DefensiveStats (Squawka, per-player).
+  teamTacklesFor: number;
+  teamTacklesAgainst: number;
+  teamInterceptionsFor: number;
+  teamInterceptionsAgainst: number;
+  // "Goals prevented" (Sofascore's own post-shot xG minus actual goals
+  // conceded, a real advanced goalkeeping metric) plus the box-score
+  // fields SeasonGoalkeepingEstimate (Fotmob) doesn't carry.
+  goalsPreventedFor: number;
+  goalsPreventedAgainst: number;
+  bigSavesFor: number;
+  bigSavesAgainst: number;
+  highClaimsFor: number;
+  highClaimsAgainst: number;
+  // Actual measured physical output, not a predicted/subjective "intensity"
+  // label -- real GPS-derived match data Sofascore publishes per team.
+  distanceCoveredKmFor: number;
+  distanceCoveredKmAgainst: number;
+  sprintsFor: number;
+  sprintsAgainst: number;
+  teamClearancesFor: number;
+  teamClearancesAgainst: number;
+  freeKicksFor: number;
+  freeKicksAgainst: number;
+  // Team total, summed across the same lineup+bench per-player statistics
+  // (LineupPlayer.xa) already read for PlayerUsagePattern -- zero extra
+  // requests, just a different rollup of the same numbers.
+  xaFor: number;
+  xaAgainst: number;
+  // From Sofascore's shotmap endpoint (situation field on goal-type shots)
+  // -- a genuinely different fetch than everything else in this type
+  // (matchStats), added specifically for this. See MatchDetails.
+  // setPieceGoals's doc comment for what "corner"/"penalty"/"set-piece"
+  // actually mean.
+  cornerGoalsFor: number;
+  cornerGoalsAgainst: number;
+  penaltyGoalsFor: number;
+  penaltyGoalsAgainst: number;
+  freeKickGoalsFor: number;
+  freeKickGoalsAgainst: number;
+  source: string;
+}
+
 // Cross-references a team's own corners-won rate (SeasonCornersEstimate)
 // against the SPECIFIC opponent's own aerial-duel record
 // (SeasonAerialEstimate) -- both already computed independently from each
@@ -525,6 +908,16 @@ export interface TravelInfo {
   awayTraveling: boolean | null;
   homeTravelDistanceKm: number | null;
   awayTravelDistanceKm: number | null;
+  // Standard-time zone difference in hours between each team's own country
+  // and the venue's -- see countryTimezoneDiffHours's doc comment (geo.ts)
+  // for the DST caveat. 0 for a team playing in its own country's zone.
+  homeTimezoneDiffHours: number | null;
+  awayTimezoneDiffHours: number | null;
+  // Estimated door-to-door hours, derived from the distance figure above --
+  // see travelTimeHours's doc comment (geo.ts) for the ground-vs-air
+  // threshold and the assumptions behind it.
+  homeTravelTimeHours: number | null;
+  awayTravelTimeHours: number | null;
 }
 
 // Record against opponents CURRENTLY ranked higher in the same competition
@@ -545,6 +938,12 @@ export interface PresenceEntry {
   name: string;
   status: "P" | "A";
   starting: boolean;
+  // True when named among the substitutes (used or unused) -- Sofascore
+  // only (see MatchDetails.homeBench/awayBench), null when bench data isn't
+  // available for this match/source. A present-but-not-starting-and-not-
+  // onBench player is present in the squad with no confirmed matchday
+  // status yet (lineup not published) rather than definitely excluded.
+  onBench: boolean | null;
   // Injury reason if absent -- null if present, or absent for a non-injury
   // reason we don't have (e.g. simply not selected).
   reason: string | null;
@@ -584,6 +983,56 @@ export interface RotationInfo {
 // that WEREN'T wins, what share were draws rather than losses. A team with
 // a high draw share here tends to grind out a point rather than collapse
 // into a loss; doesn't say anything about the wins themselves.
+// Now buildable because Sofascore's lineup payload actually distinguishes
+// bench from starting XI (see LineupPlayer.substitute) -- previously this
+// project had no way to tell "on the bench" from "not selected at all"
+// (computePresence's old doc comment), which made a bench-strength figure
+// unfounded. Market value is the same objective proxy used for keyInjuries
+// (neither source labels players by importance directly).
+export interface BenchInfo {
+  benchSize: number;
+  benchTotalMarketValue: number | null;
+  startingTotalMarketValue: number | null;
+}
+
+// Market value summed by broad position group -- the same role-matching
+// helpers already used for missingAttackers/missingDefenders/etc, applied
+// to the whole squad instead of just the injury list. Not a fabricated
+// "strength score": market value is the same objective proxy this project
+// already uses for keyInjuries and BenchInfo, just broken out by role here.
+// availableValue is totalValue minus anyone currently injured or
+// suspended -- the direct "injury-adjusted" figure.
+export interface SquadStrengthInfo {
+  totalValue: number | null;
+  attackValue: number | null;
+  midfieldValue: number | null;
+  defenseValue: number | null;
+  goalkeeperValue: number | null;
+  availableValue: number | null;
+}
+
+// From clubelo.com -- a real, externally-computed, established rating
+// methodology (not a formula invented for this project). asOf marks the
+// snapshot date this came from since Elo drifts match-to-match; null if
+// clubelo.com doesn't track this club at all (lower divisions, some
+// non-European leagues) rather than a fetch failure.
+export interface ClubEloRating {
+  elo: number;
+  rank: number;
+  asOf: string;
+}
+
+// From statsultra.com -- a real, externally-computed power index (sourced
+// from FootyStats, recalculated daily), not a formula invented for this
+// project. The genuine answer to "attack/defense rating split", which
+// clubelo.com's single overall Elo number doesn't have. Same 0-100-ish
+// scale for all three fields, not directly comparable to Elo's own scale.
+export interface ClubStrengthRating {
+  overall: number;
+  attack: number;
+  defense: number;
+}
+
 export interface ResilienceInfo {
   nonWinSampleSize: number;
   drawSharePct: number;
@@ -762,7 +1211,15 @@ export interface FatigueFlag {
   flagged: boolean;
 }
 
+// Classified from the competition name text alone ("friendly"/"pre-season"
+// substring match, case-insensitive) -- not a separate data field any source
+// publishes as a boolean. "competitive" is the default whenever a
+// competition name exists and isn't flagged friendly; null only when there's
+// no competition name at all to classify.
+export type MatchType = "friendly" | "competitive";
+
 export interface MatchInsights {
+  matchType: MatchType | null;
   restComparison: RestComparison | null;
   experienceComparison: ExperienceComparison | null;
   homeStandingsZone: StandingsZoneInfo | null;
@@ -824,5 +1281,15 @@ export interface MatchInsights {
   awayFullbackExposure: FullbackExposureInfo[] | null;
   homeStandingsImpact: StandingsImpactInfo | null;
   awayStandingsImpact: StandingsImpactInfo | null;
+  homeAdvancedStats: SeasonAdvancedStatsEstimate | null;
+  awayAdvancedStats: SeasonAdvancedStatsEstimate | null;
+  homeBenchInfo: BenchInfo | null;
+  awayBenchInfo: BenchInfo | null;
+  homeEloRating: ClubEloRating | null;
+  awayEloRating: ClubEloRating | null;
+  homeSquadStrength: SquadStrengthInfo | null;
+  awaySquadStrength: SquadStrengthInfo | null;
+  homeClubStrength: ClubStrengthRating | null;
+  awayClubStrength: ClubStrengthRating | null;
   opponentContextError: string | null;
 }
